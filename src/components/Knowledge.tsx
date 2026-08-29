@@ -136,6 +136,10 @@ const FAQ = [
     a: "Проверьте по шагам: macOS ≥ 12.3, Python запущен нативно (без Rosetta — arch в выводе uname -m должен быть arm64), torch установлен из PyPI для arm64. Запустите python -m bass2tabs --check. Если MPS так и нет, приложение честно отработает на CPU с флагом --device cpu.",
   },
   {
+    q: "pip: «No matching distribution found» для torch-mel-crepe / guitarpro",
+    a: "Оба дистрибутива в PyPI называются иначе, чем хотелось бы: питч-трекер — torchcrepe (одно слово, pip install \"torchcrepe>=0.0.22\"), парсер табулатур — PyGuitarPro (pip install \"PyGuitarPro>=0.6\"), при этом в коде он импортируется как import guitarpro. В исправленном requirements.txt оба имени уже верные — переустановите зависимости из него.",
+  },
+  {
     q: "mp3-файл не читается",
     a: "Нужен ffmpeg: brew install ffmpeg. Начиная с soundfile 0.13 mp3 читается и без него, но ffmpeg-фолбэк в audio.py надёжнее и заодно понимает всё, что умеет читать ffmpeg (m4a, ogg).",
   },

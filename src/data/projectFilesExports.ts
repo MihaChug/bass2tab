@@ -311,7 +311,7 @@ def write_musicxml(notes, path: Path, tempo: float = 120.0,
     ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
 `;
 
-const exportGp5Py = String.raw`"""Экспорт в Guitar Pro 5 (.gp5) через библиотеку guitarpro.
+const exportGp5Py = String.raw`"""Экспорт в Guitar Pro 5 (.gp5) через PyGuitarPro (import guitarpro).
 
 GP хранит ноты как (струна, лад). Строй 4-струнного баса E-A-D-G;
 для ноты выбирается минимальный лад (при равенстве — нижняя струна):
