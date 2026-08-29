@@ -7,9 +7,9 @@ const STEPS = [
     note: "ffmpeg нужен для чтения mp3 через фолбэк-бэкенд torchaudio. wav и flac читаются libsndfile напрямую.",
   },
   {
-    title: "Структура пакета",
+    title: "Структура: пакет ВНУТРИ проекта",
     cmd: "mkdir -p bass2tabs",
-    note: "Скопируйте файлы из раздела «Исходники»: requirements.txt — в корень проекта, одиннадцать .py-файлов — внутрь bass2tabs/.",
+    note: "Корень проекта содержит requirements.txt, pyproject.toml и README.md, а десять .py-файлов лежат во вложенном каталоге bass2tabs/ — именно его ищет «python -m bass2tabs». Файлы копируются из раздела «Исходники».",
   },
   {
     title: "Виртуальное окружение",
@@ -17,9 +17,14 @@ const STEPS = [
     note: "Тяжелеет на torch (~60 МБ wheel для arm64) и librosa. На Apple Silicon из PyPI приедет сборка с MPS из коробки.",
   },
   {
+    title: "Регистрация пакета",
+    cmd: "pip install -e .",
+    note: "Ставит bass2tabs в venv в режиме editable: «No module named bass2tabs» больше невозможен, команда работает из любой директории, а в PATH появляется команда bass2tabs.",
+  },
+  {
     title: "Проверка MPS и первый прогон",
-    cmd: "python -m bass2tabs --check && python -m bass2tabs my-take.wav -o out -v",
-    note: "--check гоняет тестовый matmul на выбранном устройстве; -v печатает таблицу всех найденных нот.",
+    cmd: "bass2tabs --check && bass2tabs my-take.wav -o out -v",
+    note: "--check гоняет тестовый matmul на выбранном устройстве; -v печатает таблицу всех найденных нот. Эквивалент: python -m bass2tabs …",
   },
 ];
 
@@ -27,7 +32,7 @@ const CLI_ROWS: [string, string, string][] = [
   ["--formats", "midi,musicxml,gp5", "подмножество выходных форматов через запятую"],
   ["--device", "auto", "auto → mps → cuda → cpu; можно форсировать mps или cpu"],
   ["--hop-ms", "8", "шаг питч-трекинга, мс: 5 — плотнее для быстрых партий"],
-  ["--model", "full", "ёмкость CREPE: full / medium / small / tiny"],
+  ["--model", "full", "ёмкость CREPE: full / tiny (веса, которые публикует torchcrepe)"],
   ["--confidence", "0.5", "порог «озвученных» фреймов: выше — меньше призрачных нот"],
   ["--min-duration", "0.08", "ноты короче порога отбрасываются как шум, сек"],
   ["--range", "E1:G4", "допустимый диапазон нотными именами"],
@@ -45,7 +50,7 @@ export function Guide() {
       <div className="mx-auto max-w-6xl px-5 sm:px-8">
         <SectionHeading
           kicker="04 · Установка"
-          title="Четыре команды — и пакет транскрибирует"
+          title="Пять команд — и пакет транскрибирует"
           lead="Ничего, кроме macOS на Apple Silicon и Homebrew, не предполагается. Весь инференс локальный: файл никуда не отправляется."
         />
 

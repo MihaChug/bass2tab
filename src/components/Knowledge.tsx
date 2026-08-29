@@ -128,6 +128,10 @@ export function DeepDive() {
 
 const FAQ = [
   {
+    q: "«No module named bass2tabs» — Python не видит пакет",
+    a: "python -m bass2tabs ищет каталог bass2tabs/ с __init__.py либо в текущей директории, либо среди установленных пакетов. Два решения. Быстрое: запускать команду из корня проекта — того каталога, внутри которого лежит bass2tabs/ (структура: bass2tabs/bass2tabs/__init__.py). Кардинальное: выполнить в корне проекта pip install -e . (файл pyproject.toml входит в состав) — пакет зарегистрируется в venv, команда будет работать из любой директории, а в PATH появится консольная команда bass2tabs.",
+  },
+  {
     q: "pip пишет «No matching distribution found for torch-mel-crepe»",
     a: "Пакет в PyPI называется torchcrepe — одним словом, без дефисов; имени torch-mel-crepe там никогда не было. В текущем requirements.txt это исправлено: pip install \"torchcrepe>=0.0.22\". Проверить, что всё подтянулось, можно командой python -m bass2tabs --check — она напечатает версию torchcrepe.",
   },
