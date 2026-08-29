@@ -110,6 +110,11 @@ Silicon через бэкенд **MPS** (PyTorch).
   (там должен лежать каталог bass2tabs/ с __init__.py). Кардинальное
   решение: из корня проекта выполнить pip install -e . — после этого
   python -m bass2tabs (и просто bass2tabs) работает откуда угодно;
+- ImportError dlopen _spropack.so / «__thread_bss ... offset field is
+  not zero» → это scipy ≤ 1.16 на macOS Tahoe 26.3+ (scipy/scipy#25635).
+  С версии 0.1.0 bass2tabs scipy не импортирует — фильтры на чистом
+  numpy; обновите код из раздела «Исходники» и при желании pip uninstall
+  scipy, пересоздав venv (python3.12 -m venv .venv);
 - MPS недоступен → macOS < 12.3 или x86-сборка torch (проверьте file
   $(python -c "import torch; print(torch.__file__)"));
 - ноты «дробятся» → поднимите --min-duration или --confidence;
@@ -124,8 +129,10 @@ Silicon через бэкенд **MPS** (PyTorch).
 
 ## Лицензия
 
-MIT. Зависимости: torch, torchaudio, torchcrepe, librosa, scipy,
-numpy, mido, PyGuitarPro (import guitarpro).
+MIT. Зависимости: torch, torchaudio, torchcrepe, librosa, numpy,
+mido, PyGuitarPro (import guitarpro). scipy не используется: на macOS
+Tahoe 26.3+ её бинарные расширения падают при импорте (dyld,
+scipy/scipy#25635) — медианные фильтры реализованы на чистом numpy.
 `;
 
 const requirements = String.raw`# bass2tabs — зависимости
@@ -138,9 +145,12 @@ torchaudio>=2.1
 # (torch-mel-crepe не существует: pip отдаст "No matching distribution found")
 torchcrepe>=0.0.22,<0.1
 
-# DSP: онсеты, темп, медианные фильтры
+# DSP: онсеты и темп — librosa; медианные фильтры — чистый numpy.
+# scipy из прямых зависимостей УБРАНА: на macOS Tahoe 26.3+ её
+# Fortran-расширения падают при импорте (dyld + _spropack.so,
+# scipy/scipy#25635). Транзитивно она всё равно приедет с librosa,
+# но bass2tabs её больше не импортирует.
 librosa>=0.10
-scipy>=1.11
 numpy>=1.24,<2.1
 
 # экспорт
@@ -171,7 +181,6 @@ dependencies = [
     "torchaudio>=2.1",
     "torchcrepe>=0.0.22,<0.1",
     "librosa>=0.10",
-    "scipy>=1.11",
     "numpy>=1.24,<2.1",
     "mido>=1.3",
     "PyGuitarPro>=0.6",
@@ -374,7 +383,6 @@ from __future__ import annotations
 
 import numpy as np
 import torch
-from scipy.signal import medfilt
 
 try:
     import torchcrepe
@@ -390,6 +398,26 @@ BASS_FMAX_HZ = 392.0   # G4 — верх типичного басового д�
 # CREPE измеряет высоту в центах относительно 10 Гц:
 # cents = 1200 * log2(f / 10)
 _CENTS_REF_HZ = 10.0
+
+
+def _medfilt1d(x: np.ndarray, kernel_size: int = 5) -> np.ndarray:
+    """Бегущая медиана по окну kernel_size (нечётному), края дополняются нулями.
+
+    Поведение один в один со scipy.signal.medfilt для одномерного входа,
+    но на чистом numpy. scipy из пайплайна убран сознательно: на macOS
+    Tahoe 26.3+ её Fortran-расширения перестали проходить ужесточённую
+    проверку dyld (ImportError dlopen _spropack.so, секция __thread_bss;
+    см. scipy/scipy#25635), а нам от неё нужна была ровно эта функция.
+    """
+    x = np.asarray(x, dtype=np.float64).reshape(-1)
+    if x.size == 0:
+        return x
+    k = int(kernel_size) | 1  # гарантируем нечётное окно
+    pad = np.zeros(k // 2, dtype=x.dtype)
+    windows = np.lib.stride_tricks.sliding_window_view(
+        np.concatenate([pad, x, pad]), k
+    )
+    return np.median(windows, axis=1)
 
 
 def _predict(audio: torch.Tensor, sr: int, hop: int, model: str,
@@ -433,8 +461,9 @@ def estimate_pitch(samples: np.ndarray, sr: int, device: torch.device,
         confidence.detach().float().cpu().numpy().reshape(-1).astype(np.float64)
     )
 
-    # Медианный фильтр добивает одиночные октавные скачки декодера.
-    confidence = medfilt(confidence, kernel_size=5)
+    # Медианный фильтр (чистый numpy) добивает одиночные октавные скачки
+    # декодера — без scipy, чтобы не зависеть от её бинарных расширений.
+    confidence = _medfilt1d(confidence, 5)
     return pitch, confidence, hop
 
 

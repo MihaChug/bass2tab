@@ -224,7 +224,7 @@ export function Footer() {
               <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-faint">Стек</p>
               <ul className="mt-3 space-y-2 font-mono text-[12px] text-dim">
                 <li>torchcrepe</li>
-                <li>librosa · scipy</li>
+                <li>librosa · numpy</li>
                 <li>mido · PyGuitarPro</li>
                 <li>torchaudio</li>
               </ul>

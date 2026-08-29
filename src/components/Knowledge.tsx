@@ -18,7 +18,7 @@ const BLOCKS = [
       "Сырой выход модели — 360 бинов вероятности на фрейм. Argmax по кадрам даёт «пилу» из октавных скачков, поэтому включён декодер Витерби: матрица переходов штрафует скачки больше ~25 центов за фрейм, и контур f0 остаётся гладким даже на вибрато и слайдах.",
       "Сверху — медианный фильтр на 5 фреймов: он добивает одиночные выбросы, которые Витерби пропустил на границах тишины.",
     ],
-    snippet: "torchcrepe.predict(..., decoder=torchcrepe.decode.viterbi) → medfilt(·, 5)",
+    snippet: "torchcrepe.predict(..., viterbi) → _medfilt1d(·, 5)  # чистый numpy",
   },
   {
     id: "cents",
@@ -130,6 +130,10 @@ const FAQ = [
   {
     q: "«No module named bass2tabs» — Python не видит пакет",
     a: "python -m bass2tabs ищет каталог bass2tabs/ с __init__.py либо в текущей директории, либо среди установленных пакетов. Два решения. Быстрое: запускать команду из корня проекта — того каталога, внутри которого лежит bass2tabs/ (структура: bass2tabs/bass2tabs/__init__.py). Кардинальное: выполнить в корне проекта pip install -e . (файл pyproject.toml входит в состав) — пакет зарегистрируется в venv, команда будет работать из любой директории, а в PATH появится консольная команда bass2tabs.",
+  },
+  {
+    q: "ImportError: dlopen _spropack.so — «__thread_bss … offset field is not zero»",
+    a: "Это падает scipy на macOS Tahoe 26.3+: ужесточённый dyld перестал пропускать битые Mach-O-секции в Fortran-расширениях scipy ≤ 1.16 (scipy/scipy#25635). Начиная с версии 0.1.0 bass2tabs scipy вообще не импортирует — медианные фильтры переписаны на чистый numpy (функция _medfilt1d в bass2tabs/pitch.py). Обновите исходники, и ошибка исчезнет; venv можно не трогать, так как scipy останется в окружении лишь транзитивно с librosa и никем не загружается. При желании пересоздайте venv на Python 3.11/3.12: brew install python@3.12, python3.12 -m venv .venv, pip install -r requirements.txt, pip install -e .",
   },
   {
     q: "pip пишет «No matching distribution found for torch-mel-crepe»",
