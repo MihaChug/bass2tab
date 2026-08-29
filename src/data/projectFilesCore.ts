@@ -36,16 +36,37 @@ Silicon через бэкенд **MPS** (PyTorch).
 - ffmpeg (для mp3): brew install ffmpeg;
 - torch >= 2.1 arm64-сборка — MPS включится автоматически.
 
+## Структура проекта
+
+    bass2tabs/                     <- корень проекта (этот каталог)
+    ├── README.md
+    ├── requirements.txt
+    ├── pyproject.toml
+    └── bass2tabs/                 <- Python-пакет (вложенный, то же имя!)
+        ├── __init__.py
+        ├── __main__.py            # python -m bass2tabs
+        ├── cli.py
+        ├── mps.py  audio.py  pitch.py  notes.py
+        └── midi.py  musicxml.py  gp5.py
+
+Критично: пакет лежит ВНУТРИ каталога проекта и называется ровно
+«bass2tabs» — иначе будет «No module named bass2tabs».
+
 ## Установка
 
     brew install ffmpeg
     python3 -m venv .venv && source .venv/bin/activate
     pip install -r requirements.txt
-    python -m bass2tabs --check        # диагностика MPS
+    pip install -e .                 # регистрация пакета в окружении
+    python -m bass2tabs --check      # диагностика MPS
+
+«pip install -e .» — штатная защита от «No module named bass2tabs»:
+после неё команда работает из любой директории, а в PATH появляется
+консольная команда «bass2tabs».
 
 ## Быстрый старт
 
-    python -m bass2tabs take.wav -o out --formats midi,musicxml,gp5
+    bass2tabs take.wav -o out --formats midi,musicxml,gp5   # или python -m bass2tabs ...
     python -m bass2tabs slap.flac --device mps --model full --grid 16 --tempo 112
     python -m bass2tabs demo.mp3 --range E1:E4 --min-duration 0.06 -v
 
@@ -85,6 +106,10 @@ Silicon через бэкенд **MPS** (PyTorch).
 
 ## Диагностика
 
+- «No module named bass2tabs» → команда запущена не из корня проекта
+  (там должен лежать каталог bass2tabs/ с __init__.py). Кардинальное
+  решение: из корня проекта выполнить pip install -e . — после этого
+  python -m bass2tabs (и просто bass2tabs) работает откуда угодно;
 - MPS недоступен → macOS < 12.3 или x86-сборка torch (проверьте file
   $(python -c "import torch; print(torch.__file__)"));
 - ноты «дробятся» → поднимите --min-duration или --confidence;
@@ -121,6 +146,42 @@ numpy>=1.24,<2.1
 # экспорт
 mido>=1.3            # Standard MIDI File
 PyGuitarPro>=0.6     # дистрибутив в PyPI; в коде импортируется как import guitarpro (GP3–GP5)
+`;
+
+const pyproject = String.raw`# bass2tabs — метаданные пакета. После
+#     pip install -e .
+# команда python -m bass2tabs работает из ЛЮБОЙ директории (пакет
+# регистрируется в окружении), а в PATH появляется консольная команда
+# bass2tabs. Это штатная защита от «No module named bass2tabs».
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bass2tabs"
+version = "0.1.0"
+description = "Транскрибация бас-гитары: wav/flac/mp3 -> MIDI / MusicXML / GP5 (torch, Apple Silicon MPS)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["bass", "transcription", "midi", "musicxml", "guitar-pro", "mps", "apple-silicon"]
+dependencies = [
+    "torch>=2.1",
+    "torchaudio>=2.1",
+    "torchcrepe>=0.0.22,<0.1",
+    "librosa>=0.10",
+    "scipy>=1.11",
+    "numpy>=1.24,<2.1",
+    "mido>=1.3",
+    "PyGuitarPro>=0.6",
+]
+
+[project.scripts]
+bass2tabs = "bass2tabs.cli:main"
+
+[tool.setuptools]
+packages = ["bass2tabs"]
 `;
 
 const initPy = String.raw`"""bass2tabs — транскрибация бас-гитары: аудио -> MIDI / MusicXML / GP5."""
@@ -404,6 +465,13 @@ export const CORE_FILES: ProjectFile[] = [
     group: "Обвязка",
     note: "torch / torchaudio / torchcrepe / librosa / mido / PyGuitarPro",
     code: requirements,
+  },
+  {
+    path: "pyproject.toml",
+    lang: "ini",
+    group: "Обвязка",
+    note: "устанавливаемый пакет: pip install -e . и консольная команда bass2tabs",
+    code: pyproject,
   },
   {
     path: "bass2tabs/__init__.py",
