@@ -272,8 +272,15 @@ def check() -> int:
     print("bass2tabs · проверка окружения")
     print(f"  torch            {torch.__version__}")
     try:
-        import torchcrepe
-        print(f"  torchcrepe       {torchcrepe.__version__}")
+        import torchcrepe  # noqa: F401 — проверяем, что импорт целиком здоров
+        # У torchcrepe нет атрибута __version__ — берём версию из
+        # метаданных установленного дистрибутива (dist-info).
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as _pkg_version
+        try:
+            print(f"  torchcrepe       {_pkg_version('torchcrepe')}")
+        except PackageNotFoundError:
+            print("  torchcrepe       установлен")
     except ImportError as exc:
         print(f"  torchcrepe       импорт не удался: {exc}")
         print("                     если pip show находит пакет — упала транзитивная "
