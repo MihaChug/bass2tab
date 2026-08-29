@@ -133,11 +133,11 @@ const FAQ = [
   },
   {
     q: "ImportError: dlopen _spropack.so — «__thread_bss … offset field is not zero»",
-    a: "Это падает scipy на macOS Tahoe 26.3+: ужесточённый dyld перестал пропускать битые Mach-O-секции в Fortran-расширениях scipy ≤ 1.16 (scipy/scipy#25635). Начиная с версии 0.1.0 bass2tabs scipy вообще не импортирует — медианные фильтры переписаны на чистый numpy (функция _medfilt1d в bass2tabs/pitch.py). Обновите исходники, и ошибка исчезнет; venv можно не трогать, так как scipy останется в окружении лишь транзитивно с librosa и никем не загружается. При желании пересоздайте venv на Python 3.11/3.12: brew install python@3.12, python3.12 -m venv .venv, pip install -r requirements.txt, pip install -e .",
+    a: "Это падает scipy ≤ 1.16 на macOS Tahoe 26.3+: ужесточённый dyld перестал пропускать битые Mach-O-секции в её Fortran-расширениях (scipy/scipy#25635). С версии 0.1.0 сам bass2tabs scipy не импортирует — медианные фильтры написаны на чистом numpy (_medfilt1d в pitch.py). Но важно: scipy при импорте подгружают транзитивные зависимости librosa и torchcrepe. Поэтому на Python 3.10 ошибка не исчезает, а переезжает внутрь import torchcrepe и выглядит как «Не найден torchcrepe» — хотя pip show пакет находит. Надёжное лечение — пересоздать venv на Python 3.11+: туда pip поставит scipy ≥ 1.17, где PROPACK переписан на C и секции корректны. Целиком: brew install python@3.12 && python3.12 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && pip install -e .",
   },
   {
     q: "pip пишет «No matching distribution found for torch-mel-crepe»",
-    a: "Пакет в PyPI называется torchcrepe — одним словом, без дефисов; имени torch-mel-crepe там никогда не было. В текущем requirements.txt это исправлено: pip install \"torchcrepe>=0.0.22\". Проверить, что всё подтянулось, можно командой python -m bass2tabs --check — она напечатает версию torchcrepe.",
+    a: "Пакет в PyPI называется torchcrepe — одним словом, без дефисов; имени torch-mel-crepe там никогда не было. В текущем requirements.txt это исправлено: pip install \"torchcrepe>=0.0.22\". Проверить, что всё подтянулось, можно командой bass2tabs --check — она напечатает версию torchcrepe. Если же pip show torchcrepe пакет находит, а импорт всё равно падает — программа теперь печатает истинную причину в строке «причина:»: почти наверняка это не установка, а упавшая транзитивная зависимость (на macOS 26.3+ — scipy, см. следующий пункт).",
   },
   {
     q: "MPS не обнаруживается — что делать?",

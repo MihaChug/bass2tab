@@ -14,7 +14,7 @@ const STEPS = [
   {
     title: "Виртуальное окружение",
     cmd: "python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt",
-    note: "Тяжелеет на torch (~60 МБ wheel для arm64) и librosa; на Apple Silicon из PyPI приедет сборка с MPS из коробки. scipy среди прямых зависимостей больше нет — на macOS Tahoe 26.3+ её расширения падают при импорте, поэтому медианные фильтры в коде — чистый numpy.",
+    note: "Тяжелеет на torch (~60 МБ wheel для arm64) и librosa; на Apple Silicon из PyPI приедет сборка с MPS из коробки. Сам bass2tabs scipy не использует (фильтры — чистый numpy), но её транзитивно грузят librosa/torchcrepe — поэтому на macOS Tahoe 26.3+ venv делайте на Python 3.11+ (python3.12 -m venv .venv): на 3.10 не встанет исправленная scipy ≥ 1.17.",
   },
   {
     title: "Регистрация пакета",

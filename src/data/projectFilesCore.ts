@@ -32,7 +32,8 @@ Silicon через бэкенд **MPS** (PyTorch).
 
 ## Требования
 
-- macOS 12.3+ на Apple Silicon (M1/M2/M3/M4), Python 3.10+;
+- macOS 12.3+ на Apple Silicon (M1/M2/M3/M4), Python 3.10+
+  (на macOS 26.3+ Tahoe нужен Python 3.11+ — см. «Диагностику»);
 - ffmpeg (для mp3): brew install ffmpeg;
 - torch >= 2.1 arm64-сборка — MPS включится автоматически.
 
@@ -111,10 +112,16 @@ Silicon через бэкенд **MPS** (PyTorch).
   решение: из корня проекта выполнить pip install -e . — после этого
   python -m bass2tabs (и просто bass2tabs) работает откуда угодно;
 - ImportError dlopen _spropack.so / «__thread_bss ... offset field is
-  not zero» → это scipy ≤ 1.16 на macOS Tahoe 26.3+ (scipy/scipy#25635).
-  С версии 0.1.0 bass2tabs scipy не импортирует — фильтры на чистом
-  numpy; обновите код из раздела «Исходники» и при желании pip uninstall
-  scipy, пересоздав venv (python3.12 -m venv .venv);
+  not zero» (или «Не найден torchcrepe» при УСТАНОВЛЕННОМ пакете — это
+  та же причина, только упавшая внутри import torchcrepe) → битые
+  Mach-O-секции scipy ≤ 1.16 на macOS Tahoe 26.3+ (scipy/scipy#25635).
+  Сам bass2tabs scipy больше не импортирует, НО её при импорте грузят
+  транзитивные зависимости librosa и torchcrepe. Единственное надёжное
+  лечение: пересоздать venv на Python 3.11+ — туда встанет scipy ≥ 1.17
+  с переписанным на C PROPACK:
+      brew install python@3.12
+      python3.12 -m venv .venv && source .venv/bin/activate
+      pip install -r requirements.txt && pip install -e .
 - MPS недоступен → macOS < 12.3 или x86-сборка torch (проверьте file
   $(python -c "import torch; print(torch.__file__)"));
 - ноты «дробятся» → поднимите --min-duration или --confidence;
@@ -267,8 +274,10 @@ def check() -> int:
     try:
         import torchcrepe
         print(f"  torchcrepe       {torchcrepe.__version__}")
-    except ImportError:
-        print('  torchcrepe       не установлен: pip install "torchcrepe>=0.0.22"')
+    except ImportError as exc:
+        print(f"  torchcrepe       импорт не удался: {exc}")
+        print("                     если pip show находит пакет — упала транзитивная "
+              "зависимость; на macOS 26.3+ это scipy<=1.16 (нужен Python 3.11+)")
     print(f"  python           {sys.version.split()[0]}")
     print(f"  система          macOS {platform.mac_ver()[0] or 'n/a'} · {platform.machine()}")
 
@@ -387,8 +396,20 @@ import torch
 try:
     import torchcrepe
 except ImportError as exc:  # pragma: no cover
+    # ВАЖНО: ImportError здесь означает не обязательно «пакет не установлен».
+    # Так же падает ТРАНЗИТИВНАЯ зависимость при импорте torchcrepe:
+    # на macOS 26.3+ (Tahoe) это почти наверняка scipy <= 1.16 внутри
+    # librosa/torchcrepe — «dlopen ... _spropack.so ... __thread_bss»
+    # (scipy/scipy#25635). Поэтому печатаем истинную причину.
     raise SystemExit(
-        'Не найден torchcrepe. Выполните: pip install "torchcrepe>=0.0.22"'
+        "Не удалось импортировать torchcrepe.\n"
+        f"  причина: {exc}\n"
+        "  если pip show torchcrepe находит пакет — проблема глубже: упала "
+        "транзитивная зависимость (на macOS 26.3+ — почти наверняка "
+        "scipy<=1.16, см. scipy/scipy#25635).\n"
+        "  лечение: venv на Python 3.11+ (brew install python@3.12; "
+        "python3.12 -m venv .venv; source .venv/bin/activate; "
+        "pip install -r requirements.txt; pip install -e .)"
     ) from exc
 
 # Рабочий диапазон 4-струнного баса с запасом на слэп-обертоны.
