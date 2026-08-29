@@ -21,7 +21,7 @@ Silicon через бэкенд **MPS** (PyTorch).
 - загрузка wav / flac / mp3 через torchaudio (soundfile → ffmpeg fallback);
 - предобработка на MPS: моно-миксдаун, ресемплинг до 16 kHz, highpass 30 Гц,
   нормализация пика до −1 dBFS;
-- питч-трекинг CREPE (full) через torch-mel-crepe, декодирование Витерби,
+- питч-трекинг CREPE (full) через torchcrepe, декодирование Витерби,
   медианная фильтрация контура;
 - детекция онсетов (librosa) → сегментация контура → привязка к ближайшему
   полутону в центовом пространстве, диапазон E1–G4 (настраивается);
@@ -56,7 +56,7 @@ Silicon через бэкенд **MPS** (PyTorch).
 | --formats        | все три      | подмножество midi, musicxml, gp5                 |
 | --device         | auto         | auto / mps / cpu / cuda                          |
 | --hop-ms         | 8            | шаг питч-трекинга, мс (5–10)                     |
-| --model          | full         | ёмкость CREPE: full/medium/small/tiny            |
+| --model          | full         | ёмкость CREPE: full / tiny                       |
 | --confidence     | 0.5          | порог уверенности голосовых фреймов              |
 | --min-duration   | 0.08         | минимальная длительность ноты, с                 |
 | --range          | E1:G4        | допустимый диапазон (нотные имена)               |
@@ -89,11 +89,15 @@ Silicon через бэкенд **MPS** (PyTorch).
   $(python -c "import torch; print(torch.__file__)"));
 - ноты «дробятся» → поднимите --min-duration или --confidence;
 - гудящие призраки на паузах → CREPE уверен на тишине редко: поднимите
-  --confidence до 0.6–0.7.
+  --confidence до 0.6–0.7;
+- pip: «No matching distribution found for torch-mel-crepe» → пакета с
+  таким именем в PyPI нет, он называется torchcrepe (одно слово, без
+  дефисов). В requirements.txt это уже учтено:
+  pip install "torchcrepe>=0.0.22".
 
 ## Лицензия
 
-MIT. Зависимости: torch, torchaudio, torch-mel-crepe, librosa, scipy,
+MIT. Зависимости: torch, torchaudio, torchcrepe, librosa, scipy,
 numpy, mido, guitarpro.
 `;
 
@@ -103,7 +107,9 @@ torch>=2.1
 torchaudio>=2.1
 
 # питч-трекинг CREPE на чистом torch (инференс идёт на MPS)
-torch-mel-crepe>=0.0.22
+# ВАЖНО: пакет в PyPI называется torchcrepe — одним словом, без дефисов.
+# (torch-mel-crepe не существует: pip отдаст "No matching distribution found")
+torchcrepe>=0.0.22,<0.1
 
 # DSP: онсеты, темп, медианные фильтры
 librosa>=0.10
@@ -186,6 +192,11 @@ def check() -> int:
     """Диагностика --check: версии, доступность MPS, тестовый matmul."""
     print("bass2tabs · проверка окружения")
     print(f"  torch            {torch.__version__}")
+    try:
+        import torchcrepe
+        print(f"  torchcrepe       {torchcrepe.__version__}")
+    except ImportError:
+        print('  torchcrepe       не установлен: pip install "torchcrepe>=0.0.22"')
     print(f"  python           {sys.version.split()[0]}")
     print(f"  система          macOS {platform.mac_ver()[0] or 'n/a'} · {platform.machine()}")
 
@@ -283,11 +294,17 @@ def frame_rms(samples: np.ndarray, hop: int, device: torch.device,
     return rms.cpu().numpy()
 `;
 
-const pitchPy = String.raw`"""Питч-трекинг CREPE (torch) на MPS + сглаживание контура.
+const pitchPy = String.raw`"""Питч-трекинг CREPE (чистый PyTorch, пакет torchcrepe) — инференс на MPS.
 
-CREPE — монофонический детектор высоты: CNN поверх лог-спектра выдаёт
-распределение по 360 bins (по 20 центов) от 32.7 Гц. torch-mel-crepe —
-чистый torch-порт, поэтому инференс честно уходит на MPS-устройство.
+CREPE — монофонический детектор высоты: CNN поверх сырой волны выдаёт
+распределение по 360 центовым бинам (по 20 центов, опора 10 Гц).
+torchcrepe — канонический PyTorch-порт модели из PyPI, поэтому инференс
+честно уходит на MPS через параметр device; при сбое Metal-операций
+прогон прозрачно повторяется на CPU.
+
+Установка: pip install "torchcrepe>=0.0.22"
+Пакет называется torchcrepe — одним словом. Имени torch-mel-crepe в PyPI
+не существует (отсюда ошибка pip "No matching distribution found").
 """
 
 from __future__ import annotations
@@ -297,43 +314,61 @@ import torch
 from scipy.signal import medfilt
 
 try:
-    import torch_mel_crepe as mel_crepe
+    import torchcrepe
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(
-        "Не найден torch-mel-crepe. Выполните: pip install torch-mel-crepe"
+        'Не найден torchcrepe. Выполните: pip install "torchcrepe>=0.0.22"'
     ) from exc
 
 # Рабочий диапазон 4-струнного баса с запасом на слэп-обертоны.
-BASS_FMIN = "E1"   # 41.2 Гц
-BASS_FMAX = "G4"   # 392.0 Гц
+BASS_FMIN_HZ = 41.2    # E1 — открытая четвёртая струна
+BASS_FMAX_HZ = 392.0   # G4 — верх типичного басового диапазона
 
 # CREPE измеряет высоту в центах относительно 10 Гц:
 # cents = 1200 * log2(f / 10)
 _CENTS_REF_HZ = 10.0
 
 
-def estimate_pitch(samples: np.ndarray, sr: int, device: torch.device,
-                   hop_ms: float = 8.0, viterbi: bool = True,
-                   model: str = "full"):
-    """Прогнать CREPE и вернуть (f0 в Гц, уверенность, hop в сэмплах)."""
-    hop = max(16, int(sr * hop_ms / 1000))
-    batch = 2048 if device.type == "mps" else 4096
-
+def _predict(audio: torch.Tensor, sr: int, hop: int, model: str,
+             device: torch.device, batch: int):
+    """Один прогон CREPE на указанном устройстве."""
     with torch.inference_mode():
-        pitch, confidence = mel_crepe.predict(
-            samples, sr,
-            hop_length=hop,
-            fmin=BASS_FMIN,
-            fmax=BASS_FMAX,
-            model_capacity=model,
-            viterbi=viterbi,
-            center=True,
+        pitch, confidence = torchcrepe.predict(
+            audio, sr, hop,
+            fmin=BASS_FMIN_HZ,
+            fmax=BASS_FMAX_HZ,
+            model=model,                          # "full" или "tiny"
+            decoder=torchcrepe.decode.viterbi,    # сглаживание по бинам
             batch_size=batch,
             device=device,
+            return_periodicity=True,
+        )
+    return pitch, confidence
+
+
+def estimate_pitch(samples: np.ndarray, sr: int, device: torch.device,
+                   hop_ms: float = 8.0, model: str = "full"):
+    """Прогнать CREPE и вернуть (f0 в Гц, периодичность 0..1, hop в сэмплах)."""
+    hop = max(16, int(sr * hop_ms / 1000))
+    batch = 1024 if device.type == "mps" else 2048
+    audio = torch.as_tensor(samples, dtype=torch.float32).reshape(1, -1)
+
+    try:
+        pitch, confidence = _predict(audio, sr, hop, model, device, batch)
+    except RuntimeError as exc:
+        # Редкие операции CREPE могут быть не заведены на Metal —
+        # тогда повторяем на CPU и честно об этом говорим.
+        if device.type != "mps":
+            raise
+        print(f"  ! MPS-инференс упал ({type(exc).__name__}), повторяю на CPU")
+        pitch, confidence = _predict(
+            audio, sr, hop, model, torch.device("cpu"), batch
         )
 
-    pitch = pitch.detach().float().cpu().numpy().astype(np.float64)
-    confidence = confidence.detach().float().cpu().numpy().astype(np.float64)
+    pitch = pitch.detach().float().cpu().numpy().reshape(-1).astype(np.float64)
+    confidence = (
+        confidence.detach().float().cpu().numpy().reshape(-1).astype(np.float64)
+    )
 
     # Медианный фильтр добивает одиночные октавные скачки декодера.
     confidence = medfilt(confidence, kernel_size=5)
@@ -365,7 +400,7 @@ export const CORE_FILES: ProjectFile[] = [
     path: "requirements.txt",
     lang: "ini",
     group: "Обвязка",
-    note: "torch / torchaudio / torch-mel-crepe / librosa / mido / guitarpro",
+    note: "torch / torchaudio / torchcrepe / librosa / mido / guitarpro",
     code: requirements,
   },
   {
@@ -400,7 +435,7 @@ export const CORE_FILES: ProjectFile[] = [
     path: "bass2tabs/pitch.py",
     lang: "python",
     group: "Ядро",
-    note: "CREPE через torch-mel-crepe: инференс на MPS, Витерби, сглаживание",
+    note: "CREPE через torchcrepe: инференс на MPS, Витерби, сглаживание",
     code: pitchPy,
   },
 ];

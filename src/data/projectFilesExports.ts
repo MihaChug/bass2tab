@@ -459,7 +459,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--hop-ms", type=float, default=8.0,
                    help="шаг питч-трекинга, мс (5-10)")
     p.add_argument("--model", default="full",
-                   choices=("full", "medium", "small", "tiny"))
+                   choices=("full", "tiny"))
     p.add_argument("--confidence", type=float, default=0.5,
                    help="порог уверенности голосовых фреймов")
     p.add_argument("--min-duration", type=float, default=0.08,
