@@ -18,7 +18,8 @@ Silicon через бэкенд **MPS** (PyTorch).
 
 ## Возможности
 
-- загрузка wav / flac / mp3 через torchaudio (soundfile → ffmpeg fallback);
+- загрузка wav / flac / mp3 через soundfile (libsndfile), фолбэк — ffmpeg
+  CLI. Не используется torchaudio.load, поэтому не нужен torchcodec;
 - предобработка на MPS: моно-миксдаун, ресемплинг до 16 kHz, highpass 30 Гц,
   нормализация пика до −1 dBFS;
 - питч-трекинг CREPE (full) через torchcrepe, декодирование Витерби,
@@ -91,7 +92,8 @@ Silicon через бэкенд **MPS** (PyTorch).
 
 ## Как это устроено (коротко)
 
-1. torchaudio грузит файл и пересылает моно-сигнал 16 kHz на MPS;
+1. soundfile (или ffmpeg-CLI как фолбэк) читает файл, моно-сигнал 16 kHz
+   уходит на MPS;
    biquad-highpass 30 Гц убирает сценический гул, пик нормализуется.
 2. CREPE (модель full, ~24.4M параметров) считает вероятность 360 центовых
    бинов на фрейм; декодер Витерби по матрице переходов даёт гладкий контур
@@ -136,7 +138,8 @@ Silicon через бэкенд **MPS** (PyTorch).
 
 ## Лицензия
 
-MIT. Зависимости: torch, torchaudio, torchcrepe, librosa, numpy,
+MIT. Зависимости: torch, torchaudio (только DSP-функционал), torchcrepe,
+librosa, soundfile, numpy,
 mido, PyGuitarPro (import guitarpro). scipy не используется: на macOS
 Tahoe 26.3+ её бинарные расширения падают при импорте (dyld,
 scipy/scipy#25635) — медианные фильтры реализованы на чистом numpy.
@@ -159,6 +162,11 @@ torchcrepe>=0.0.22,<0.1
 # но bass2tabs её больше не импортирует.
 librosa>=0.10
 numpy>=1.24,<2.1
+
+# Чтение wav/flac/mp3 — через soundfile (libsndfile), НЕ через
+# torchaudio.load: в torchaudio>=2.6 load() требует torchcodec, а
+# soundfile стабилен и уже стоит как зависимость librosa.
+soundfile>=0.12
 
 # экспорт
 mido>=1.3            # Standard MIDI File
@@ -189,6 +197,7 @@ dependencies = [
     "torchcrepe>=0.0.22,<0.1",
     "librosa>=0.10",
     "numpy>=1.24,<2.1",
+    "soundfile>=0.12",
     "mido>=1.3",
     "PyGuitarPro>=0.6",
 ]
@@ -307,13 +316,20 @@ def check() -> int:
 
 const audioPy = String.raw`"""Загрузка и предобработка аудио целиком в torch (на MPS, когда доступен).
 
-torchaudio читает wav/flac нативно (libsndfile), mp3 — через soundfile
-(>= 0.13 умеет mp3) либо ffmpeg-бэкенд. Ресемплинг и фильтрация считаются
-на GPU, в numpy сигнал уходит только перед librosa/CREPE.
+Чтение намеренно НЕ через torchaudio.load: в torchaudio >= 2.6 старые
+бэкенды (soundfile/ffmpeg) убрали, и load() требует отдельный пакет
+torchcodec (ImportError: "TorchCodec is required"). Вместо этого:
+  1) soundfile (libsndfile) — wav/flac нативно, mp3 на libsndfile>=1.1;
+  2) ffmpeg CLI — фолбэк для mp3 и всего, что умеет ffmpeg.
+Ресемплинг и фильтрация по-прежнему считаются на GPU через
+torchaudio.functional (эта часть API стабильна и не зависит от бэкендов).
 """
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -333,16 +349,46 @@ class AudioClip:
     seconds: float
 
 
+def _read_audio(path: Path):
+    """(тензор [каналы, сэмплы] float32, sr). soundfile -> ffmpeg-CLI."""
+    # 1) soundfile / libsndfile: wav, flac (и mp3 на libsndfile>=1.1)
+    try:
+        import soundfile as sf
+        data, sr = sf.read(str(path), dtype="float32", always_2d=True)
+        return torch.from_numpy(np.ascontiguousarray(data.T)), int(sr)
+    except Exception:
+        pass
+
+    # 2) ffmpeg CLI: mp3 и всё остальное
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        raise RuntimeError(
+            f"soundfile не смог прочитать {path.name}, а ffmpeg/ffprobe "
+            "не найдены в PATH. Установите: brew install ffmpeg"
+        )
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-print_format", "json",
+         "-show_streams", str(path)],
+        capture_output=True, text=True, check=True,
+    )
+    info = next(s for s in json.loads(probe.stdout)["streams"]
+                if s.get("codec_type") == "audio")
+    sr = int(info["sample_rate"])
+    ch = int(info.get("channels", 2))
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path),
+         "-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"],
+        capture_output=True, check=True,
+    ).stdout
+    data = np.frombuffer(raw, dtype=np.float32).reshape(-1, ch).T
+    return torch.from_numpy(np.ascontiguousarray(data)), sr
+
+
 def load_clip(path: Path, device: torch.device) -> AudioClip:
     """Загрузить файл, смикшировать в моно и ресемплировать до 16 kHz."""
     if not path.exists():
         raise FileNotFoundError(f"файл не найден: {path}")
 
-    try:
-        wav, sr = torchaudio.load(path, backend="soundfile")
-    except Exception:
-        wav, sr = torchaudio.load(path, backend="ffmpeg")  # mp3 и прочее
-
+    wav, sr = _read_audio(path)
     wav = wav.to(device=device, dtype=torch.float32)
     if wav.shape[0] > 1:
         wav = wav.mean(dim=0, keepdim=True)

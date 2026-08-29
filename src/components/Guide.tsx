@@ -4,7 +4,7 @@ const STEPS = [
   {
     title: "Системные зависимости",
     cmd: "brew install ffmpeg",
-    note: "ffmpeg нужен для чтения mp3 через фолбэк-бэкенд torchaudio. wav и flac читаются libsndfile напрямую.",
+    note: "ffmpeg (CLI) — фолбэк-загрузчик для mp3 и экзотики; основной путь — soundfile (libsndfile), он читает wav/flac напрямую, а на libsndfile 1.1+ и mp3. torchaudio.load не используется, поэтому torchcodec не нужен.",
   },
   {
     title: "Структура: пакет ВНУТРИ проекта",

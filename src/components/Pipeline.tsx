@@ -68,8 +68,8 @@ const STAGES: Stage[] = [
   {
     num: "01",
     title: "Декодирование",
-    engine: "torchaudio",
-    desc: "wav и flac читаются libsndfile, mp3 подхватывает ffmpeg-фолбэк. Сигнал сразу превращается в float-тензор и уезжает на выбранное устройство.",
+    engine: "soundfile · ffmpeg",
+    desc: "wav и flac читает soundfile (libsndfile), mp3 — он же на libsndfile 1.1+ либо ffmpeg CLI. Без torchaudio.load и torchcodec. Сигнал сразу превращается в float-тензор и уезжает на выбранное устройство.",
     tags: ["wav / flac / mp3", "fallback: ffmpeg"],
     icon: ICONS.wave,
   },

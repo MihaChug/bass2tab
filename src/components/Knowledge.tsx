@@ -132,6 +132,10 @@ const FAQ = [
     a: "python -m bass2tabs ищет каталог bass2tabs/ с __init__.py либо в текущей директории, либо среди установленных пакетов. Два решения. Быстрое: запускать команду из корня проекта — того каталога, внутри которого лежит bass2tabs/ (структура: bass2tabs/bass2tabs/__init__.py). Кардинальное: выполнить в корне проекта pip install -e . (файл pyproject.toml входит в состав) — пакет зарегистрируется в venv, команда будет работать из любой директории, а в PATH появится консольная команда bass2tabs.",
   },
   {
+    q: "ImportError: TorchCodec is required for load_with_torchcodec",
+    a: "В torchaudio 2.6+ полностью убрали старые бэкенды: аргумент backend=\"soundfile\"/\"ffmpeg\" в torchaudio.load игнорируется, и загрузка теперь всегда идёт через пакет torchcodec, которого нет в окружении. С версии 0.1.0 bass2tabs вообще не вызывает torchaudio.load: чтение сделано через soundfile (libsndfile — wav/flac, а на libsndfile 1.1+ и mp3) с фолбэком на ffmpeg CLI (brew install ffmpeg). torchaudio остался только для DSP-функционала (ресемплинг, highpass), который от бэкендов не зависит. Обновите bass2tabs/audio.py и requirements.txt — и ошибка исчезнет без установки torchcodec.",
+  },
+  {
     q: "ImportError: dlopen _spropack.so — «__thread_bss … offset field is not zero»",
     a: "Это падает scipy ≤ 1.16 на macOS Tahoe 26.3+: ужесточённый dyld перестал пропускать битые Mach-O-секции в её Fortran-расширениях (scipy/scipy#25635). С версии 0.1.0 сам bass2tabs scipy не импортирует — медианные фильтры написаны на чистом numpy (_medfilt1d в pitch.py). Но важно: scipy при импорте подгружают транзитивные зависимости librosa и torchcrepe. Поэтому на Python 3.10 ошибка не исчезает, а переезжает внутрь import torchcrepe и выглядит как «Не найден torchcrepe» — хотя pip show пакет находит. Надёжное лечение — пересоздать venv на Python 3.11+: туда pip поставит scipy ≥ 1.17, где PROPACK переписан на C и секции корректны. Целиком: brew install python@3.12 && python3.12 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && pip install -e .",
   },
