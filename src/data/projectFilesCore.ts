@@ -28,7 +28,7 @@ Silicon через бэкенд **MPS** (PyTorch).
 - velocity из RMS-энергии атаки, авто-оценка темпа (beat_track) или --tempo;
 - квантизация на сетку 1/16 (или 1/8, 1/4);
 - экспорт: .mid (mido), .musicxml (собственный writer, басовый ключ, связи),
-  .gp5 (guitarpro, 4-струнный строй E–A–D–G, эвристика минимального лада).
+  .gp5 (PyGuitarPro, 4-струнный строй E–A–D–G, эвристика минимального лада).
 
 ## Требования
 
@@ -80,7 +80,7 @@ Silicon через бэкенд **MPS** (PyTorch).
 4. Темп — librosa.beat.beat_track с приведением к 70–170 BPM; старты и
    длительности снэпаются к сетке, перекрытия укорачиваются.
 5. MIDI пишется дельта-событиями (480 tpq); MusicXML — partwise с басовым
-   ключом и tie-связками на границах тактов; GP5 — через guitarpro,
+   ключом и tie-связками на границах тактов; GP5 — через PyGuitarPro,
    нота маппится в (струна, лад) минимальным ладом.
 
 ## Диагностика
@@ -92,13 +92,15 @@ Silicon через бэкенд **MPS** (PyTorch).
   --confidence до 0.6–0.7;
 - pip: «No matching distribution found for torch-mel-crepe» → пакета с
   таким именем в PyPI нет, он называется torchcrepe (одно слово, без
-  дефисов). В requirements.txt это уже учтено:
-  pip install "torchcrepe>=0.0.22".
+  дефисов): pip install "torchcrepe>=0.0.22";
+- pip: «No matching distribution found for guitarpro» → дистрибутив
+  называется PyGuitarPro, при этом в коде import guitarpro:
+  pip install "PyGuitarPro>=0.6".
 
 ## Лицензия
 
 MIT. Зависимости: torch, torchaudio, torchcrepe, librosa, scipy,
-numpy, mido, guitarpro.
+numpy, mido, PyGuitarPro (import guitarpro).
 `;
 
 const requirements = String.raw`# bass2tabs — зависимости
@@ -118,7 +120,7 @@ numpy>=1.24,<2.1
 
 # экспорт
 mido>=1.3            # Standard MIDI File
-guitarpro>=0.6       # чтение/запись Guitar Pro 3–5 (.gp5)
+PyGuitarPro>=0.6     # дистрибутив в PyPI; в коде импортируется как import guitarpro (GP3–GP5)
 `;
 
 const initPy = String.raw`"""bass2tabs — транскрибация бас-гитары: аудио -> MIDI / MusicXML / GP5."""
@@ -400,7 +402,7 @@ export const CORE_FILES: ProjectFile[] = [
     path: "requirements.txt",
     lang: "ini",
     group: "Обвязка",
-    note: "torch / torchaudio / torchcrepe / librosa / mido / guitarpro",
+    note: "torch / torchaudio / torchcrepe / librosa / mido / PyGuitarPro",
     code: requirements,
   },
   {

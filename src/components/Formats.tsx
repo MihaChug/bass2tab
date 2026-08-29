@@ -81,7 +81,7 @@ const ARTIFACTS: Artifact[] = [
   },
   {
     ext: ".gp5",
-    lib: "guitarpro",
+    lib: "PyGuitarPro",
     title: "Guitar Pro 5",
     desc: "Трек «Bass» со строем E1–A1–D2–G2. Для каждой ноты выбирается минимальный лад (0–24), паузы достраивают такт до 4/4. Темп и название переносятся в заголовок партитуры.",
     opens: ["Guitar Pro", "TuxGuitar", "alphaTab"],

@@ -108,7 +108,7 @@ const STAGES: Stage[] = [
   {
     num: "06",
     title: "Экспорт в три формата",
-    engine: "mido · xml.etree · guitarpro",
+    engine: "mido · xml.etree · PyGuitarPro",
     desc: "MIDI — дельта-событиями при 480 tpq; MusicXML — partwise с басовым ключом и tie-связками на границах тактов; GP5 — табулатура на строе E–A–D–G с минимальными ладами.",
     tags: [".mid", ".musicxml", ".gp5"],
     icon: ICONS.sheets,
