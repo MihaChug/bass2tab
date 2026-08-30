@@ -327,6 +327,15 @@ from pathlib import Path
 
 import guitarpro as gp
 
+# Tempo в разных сборках PyGuitarPro экспортируется по-разному: обычно
+# доступен и как gp.Tempo, но в части сборок top-level __all__ его не
+# отдаёт (module 'guitarpro' has no attribute 'Tempo'). Документированное
+# и гарантированное место — guitarpro.models.Tempo, поэтому берём оттуда.
+try:
+    from guitarpro.models import Tempo as _Tempo
+except ImportError:  # pragma: no cover — экзотическая сборка
+    _Tempo = gp.Tempo
+
 from .text import to_latin1
 
 # номер струны -> MIDI открытой струны; в GP струна 1 — самая высокая
@@ -351,11 +360,14 @@ def _fret_for(midi: int) -> tuple[int, int]:
 def _duration_value(steps: int) -> int:
     """Снэп к {целая, 1/2, 1/4, 1/8, 1/16}.
 
-    В guitarpro Duration.value — двоичный логарифм от четверти:
-    -2 целая, -1 половина, 0 четверть, 1 восьмая, 2 шестнадцатая.
+    В PyGuitarPro Duration.value — это знаменатель ноты, а не логарифм:
+    1 целая, 2 половина, 4 четверть, 8 восьмая, 16 шестнадцатая (default=4).
+    steps — число шестнадцатых в ноте; для точных степеней value = 16/steps.
     """
-    table = [(16, -2), (8, -1), (4, 0), (2, 1), (1, 2)]
-    return min(table, key=lambda t: abs(t[0] - steps))[1]
+    table = [(16, 1), (8, 2), (4, 4), (2, 8), (1, 16)]  # (steps, value)
+    steps = max(1, min(16, steps))
+    _, value = min(table, key=lambda t: abs(t[0] - steps))
+    return value
 
 
 def _add_rest(voice, steps: int) -> None:
@@ -370,7 +382,9 @@ def write_gp5(notes, path: Path, tempo: float = 120.0,
     song.title = to_latin1(title)
     song.artist = to_latin1(artist)
     tempo_val = int(round(tempo))
-    song.tempo = gp.Tempo(tempo_val)
+    # Song.tempo по умолчанию — int (120), райтер ждёт именно int;
+    # в сам файл темп пишется из header.tempo (объект Tempo, ниже).
+    song.tempo = tempo_val
 
     # Трек: у свежей gp.Song() дефолтный трек уже есть, но подстрахуемся
     # на случай, если в новой версии PyGuitarPro Song() создаётся пустым.
@@ -398,7 +412,7 @@ def write_gp5(notes, path: Path, tempo: float = 120.0,
         header = gp.MeasureHeader()
         header.number = i + 1
         header.start = 960 + i * 3840
-        header.tempo = gp.Tempo(tempo_val)
+        header.tempo = _Tempo(tempo_val)
         header.timeSignature.numerator = 4
         header.timeSignature.denominator.value = 4
         song.measureHeaders.append(header)
@@ -425,10 +439,12 @@ def write_gp5(notes, path: Path, tempo: float = 120.0,
             steps = min(steps, BAR_STEPS - start16)
 
             beat = gp.Beat(voice, duration=gp.Duration(value=_duration_value(steps)))
-            _, string = _fret_for(n.midi)
+            # Note.value — это номер ЛАДА, а не MIDI-питч: реальная высота
+            # в GP вычисляется как value + строй струны (realValue).
+            fret, string = _fret_for(n.midi)
             # type=normal обязателен: дефолтный NoteType.rest записал бы
             # в файл недопустимый байт типа ноты.
-            note = gp.Note(beat, value=n.midi, velocity=n.velocity, string=string,
+            note = gp.Note(beat, value=fret, velocity=n.velocity, string=string,
                            type=gp.NoteType.normal)
             beat.notes.append(note)
             voice.beats.append(beat)
