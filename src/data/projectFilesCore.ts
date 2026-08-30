@@ -134,6 +134,9 @@ Silicon через бэкенд **MPS** (PyTorch).
   очистка кэша Metal и PYTORCH_ENABLE_MPS_FALLBACK=1. Чтобы остаться на
   GPU и снизить шанс аборта: --batch 128 / --batch 64; гарантированный
   обход — --device cpu.
+- виснет на «чанк N/N … 100%» при нулевой загрузке CPU → дедлок очереди
+  multiprocessing (join ДО get). В текущем pitch.py исправлено: результат
+  вычитывается из очереди ДО join; обновите файл и перезапустите;
 - MPS недоступен → macOS < 12.3 или x86-сборка torch (проверьте file
   $(python -c "import torch; print(torch.__file__)"));
 - ноты «дробятся» → поднимите --min-duration или --confidence;
@@ -468,6 +471,9 @@ try/except). При сбое отдельного чанка на Metal он и 
 
 from __future__ import annotations
 
+import sys
+import time
+
 import numpy as np
 import torch
 
@@ -528,6 +534,22 @@ def _medfilt1d(x: np.ndarray, kernel_size: int = 5) -> np.ndarray:
     return np.median(windows, axis=1)
 
 
+def progress_bar(done: int, total: int, label: str, width: int = 24) -> None:
+    """Однострочный прогресс-бар: перезаписывает текущую строку через \\r.
+
+    Видим и из дочернего процесса (stdio наследуется), поэтому бар CREPE
+    показывается, даже когда инференс идёт в защищённом subprocess'е.
+    Завершающий перевод строки делает вызывающий код.
+    """
+    pct = done / total if total else 1.0
+    filled = int(round(pct * width))
+    sys.stdout.write(
+        f"\r  {label} [" + "\u2588" * filled + "\u2591" * (width - filled)
+        + f"] {pct * 100:3.0f}%  "
+    )
+    sys.stdout.flush()
+
+
 def _predict(audio: torch.Tensor, sr: int, hop: int, model: str,
              device: torch.device, batch: int):
     """Один прогон CREPE на указанном устройстве."""
@@ -555,29 +577,41 @@ def _crepe_pass(samples: np.ndarray, sr: int, device: torch.device,
     """
     audio = torch.as_tensor(samples, dtype=torch.float32).reshape(1, -1)
     step = max(hop, int(_CHUNK_SECONDS * sr) // hop * hop)
+    starts = list(range(0, audio.shape[1], step))
+    total = len(starts)
     pitches, confidences = [], []
-    for start in range(0, audio.shape[1], step):
+    t0 = time.perf_counter()
+    for ci, start in enumerate(starts):
         part = audio[:, start:start + step]
         pitch, conf = _predict(part, sr, hop, model, device, batch)
         pitches.append(pitch.detach().float().cpu().numpy().reshape(-1))
         confidences.append(conf.detach().float().cpu().numpy().reshape(-1))
         if device.type == "mps" and hasattr(torch.mps, "empty_cache"):
             torch.mps.empty_cache()
+        progress_bar(ci + 1, total,
+                     f"CREPE {model} · чанк {ci + 1}/{total}"
+                     f" · {time.perf_counter() - t0:.0f} c")
+    sys.stdout.write("\n")
+    sys.stdout.flush()
     return (np.concatenate(pitches).astype(np.float64),
             np.concatenate(confidences).astype(np.float64))
 
 
 def _mps_worker(samples, sr, hop, model, batch, queue):
-    """Цель дочернего процесса: CREPE на MPS, результат — в очередь."""
+    """Цель дочернего процесса: CREPE на MPS, результат — в очередь.
+
+    Через pipe отправляем float32: точности для f0 в Гц хватает с запасом,
+    а полезная нагрузка вдвое меньше — меньше шанс упереться в буфер pipe.
+    """
     try:
         pitch, conf = _crepe_pass(samples, sr, torch.device("mps"),
                                   hop, model, batch)
-        queue.put(("ok", pitch, conf))
+        queue.put(("ok", pitch.astype(np.float32), conf.astype(np.float32)))
     except Exception as exc:  # noqa: BLE001 — родителю уйдёт статус "err"
         queue.put(("err", repr(exc)))
 
 
-def _run_mps_guarded(samples, sr, hop, model, batch):
+def _run_mps_guarded(samples, sr, hop, model, batch, timeout: float = 1800.0):
     """MPS-инференс в дочернем процессе с авто-откатом на CPU.
 
     Metal-драйвер macOS при нехватке общей памяти падает в SIGABRT
@@ -587,23 +621,56 @@ def _run_mps_guarded(samples, sr, hop, model, batch):
     != 0) или сообщает об ошибке, родитель спокойно повторяет на CPU.
     Точки входа (__main__.py, console-script) защищены guard'ом
     if __name__ == "__main__", так что spawn безопасен.
+
+    ВАЖНО про очередь: результат (pitch + confidence, сотни КБ) надо
+    вычитывать ИЗ ОЧЕРЕДИ ДО proc.join(). Обратный порядок — классический
+    дедлок multiprocessing.Queue: полезная нагрузка больше буфера pipe
+    (~64 КБ), feeder-поток ребёнка блокируется на записи, ребёнок не
+    завершается, а родитель вечно висит в join(). Правило из доков
+    Python: «все элементы очереди должны быть забраны до join'а».
+    Поэтому читаем get() в цикле и join'им только потом.
     """
     import multiprocessing as mp
+    from queue import Empty
 
     ctx = mp.get_context("spawn")
     queue = ctx.Queue()
     proc = ctx.Process(target=_mps_worker,
                        args=(samples, sr, hop, model, batch, queue))
     proc.start()
-    proc.join()
-    if proc.exitcode == 0 and not queue.empty():
-        status, *payload = queue.get()
-        if status == "ok":
-            return payload[0], payload[1]
-        print(f"  ! CREPE на MPS вернул ошибку ({payload[0]}), повторяю на CPU")
+
+    # Читаем результат ДО join (см. докстринг). Цикл с секундным таймаутом
+    # покрывает все три исхода: результат пришёл; ребёнок погиб, не успев
+    # ничего положить (abort Metal-драйвера); зависание — страховочный deadline.
+    result = None
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            result = queue.get(timeout=1.0)
+            break
+        except Empty:
+            if not proc.is_alive():
+                break  # ребёнок погиб; если что-то и было — feeder допишет
+            if time.monotonic() > deadline:
+                break
+
+    proc.join(timeout=10)
+    if proc.is_alive():  # параноидально: зомби не оставляем
+        proc.kill()
+        proc.join(timeout=5)
+
+    if (isinstance(result, tuple) and result and result[0] == "ok"
+            and proc.exitcode == 0):
+        pitch = np.asarray(result[1], dtype=np.float64)
+        conf = np.asarray(result[2], dtype=np.float64)
+        return pitch, conf
+
+    sys.stdout.write("\n")  # дочерний бар мог остаться без перевода строки
+    if isinstance(result, tuple) and result and result[0] == "err":
+        print(f"  ! CREPE на MPS вернул ошибку ({result[1]}), повторяю на CPU")
     else:
-        print(f"  ! MPS-процесс погиб (exitcode {proc.exitcode}) — похоже на "
-              "abort Metal-драйвера, повторяю на CPU")
+        print(f"  ! MPS-процесс не вернул результат (exitcode {proc.exitcode}) — "
+              "похоже на abort Metal-драйвера, повторяю на CPU")
     return _crepe_pass(samples, sr, torch.device("cpu"), hop, model, batch)
 
 
