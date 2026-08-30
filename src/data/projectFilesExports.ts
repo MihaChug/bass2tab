@@ -425,6 +425,7 @@ import os
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
@@ -437,7 +438,7 @@ from .export_midi import write_midi
 from .export_xml import write_musicxml
 from .mps import check, describe, pick_device
 from .notes import detect_notes, estimate_tempo, midi_to_name, quantize
-from .pitch import estimate_pitch, hz_to_cents
+from .pitch import estimate_pitch, hz_to_cents, progress_bar
 
 FORMATS = ("midi", "musicxml", "gp5")
 EXT = {"midi": ".mid", "musicxml": ".musicxml", "gp5": ".gp5"}
@@ -520,6 +521,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{C.BOLD}· загружено{C.END} {clip.path.name}: "
           f"{fmt_time(clip.seconds)} · {clip.source_sr} Hz -> 16 kHz mono")
 
+    print(f"{C.BOLD}· питч-трекинг{C.END} "
+          f"{C.DIM}(CREPE {args.model} на {device})…{C.END}")
     t = time.perf_counter()
     pitch, confidence, hop = estimate_pitch(
         clip.samples, clip.sr, device, hop_ms=args.hop_ms,
@@ -531,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
           f"{n_chunks} чанк(ов) · hop {args.hop_ms:g} ms · "
           f"{time.perf_counter() - t:.1f} c")
 
+    print(f"{C.DIM}· онсеты, темп и сегментация…{C.END}")
     rms_hop = 512
     rms = frame_rms(clip.samples, rms_hop)
     midi_low, midi_high = parse_range(args.note_range)
@@ -565,19 +569,21 @@ def main(argv: list[str] | None = None) -> int:
     if unknown:
         raise SystemExit(f"неизвестные форматы: {', '.join(sorted(unknown))}")
 
+    order = [f for f in FORMATS if f in formats]
+    print(f"{C.BOLD}· экспорт{C.END} {C.DIM}({', '.join(order)})…{C.END}")
     written = []
-    if "midi" in formats:
-        path = out_dir / f"{stem}{EXT['midi']}"
-        write_midi(notes, path, tempo=tempo, program=args.program, title=title)
+    for i, fmt in enumerate(order):
+        path = out_dir / f"{stem}{EXT[fmt]}"
+        if fmt == "midi":
+            write_midi(notes, path, tempo=tempo, program=args.program, title=title)
+        elif fmt == "musicxml":
+            write_musicxml(notes, path, tempo=tempo, title=title, creator="bass2tabs")
+        else:
+            write_gp5(notes, path, tempo=tempo, title=title, artist=args.artist or "")
         written.append(path)
-    if "musicxml" in formats:
-        path = out_dir / f"{stem}{EXT['musicxml']}"
-        write_musicxml(notes, path, tempo=tempo, title=title, creator="bass2tabs")
-        written.append(path)
-    if "gp5" in formats:
-        path = out_dir / f"{stem}{EXT['gp5']}"
-        write_gp5(notes, path, tempo=tempo, title=title, artist=args.artist or "")
-        written.append(path)
+        progress_bar(i + 1, len(order), f"экспорт · {fmt}")
+    sys.stdout.write("\n")
+    sys.stdout.flush()
 
     lo_name = midi_to_name(min(n.midi for n in notes))
     hi_name = midi_to_name(max(n.midi for n in notes))

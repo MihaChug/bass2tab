@@ -468,6 +468,9 @@ try/except). При сбое отдельного чанка на Metal он и 
 
 from __future__ import annotations
 
+import sys
+import time
+
 import numpy as np
 import torch
 
@@ -528,6 +531,22 @@ def _medfilt1d(x: np.ndarray, kernel_size: int = 5) -> np.ndarray:
     return np.median(windows, axis=1)
 
 
+def progress_bar(done: int, total: int, label: str, width: int = 24) -> None:
+    """Однострочный прогресс-бар: перезаписывает текущую строку через \\r.
+
+    Видим и из дочернего процесса (stdio наследуется), поэтому бар CREPE
+    показывается, даже когда инференс идёт в защищённом subprocess'е.
+    Завершающий перевод строки делает вызывающий код.
+    """
+    pct = done / total if total else 1.0
+    filled = int(round(pct * width))
+    sys.stdout.write(
+        f"\r  {label} [" + "\u2588" * filled + "\u2591" * (width - filled)
+        + f"] {pct * 100:3.0f}%  "
+    )
+    sys.stdout.flush()
+
+
 def _predict(audio: torch.Tensor, sr: int, hop: int, model: str,
              device: torch.device, batch: int):
     """Один прогон CREPE на указанном устройстве."""
@@ -555,14 +574,22 @@ def _crepe_pass(samples: np.ndarray, sr: int, device: torch.device,
     """
     audio = torch.as_tensor(samples, dtype=torch.float32).reshape(1, -1)
     step = max(hop, int(_CHUNK_SECONDS * sr) // hop * hop)
+    starts = list(range(0, audio.shape[1], step))
+    total = len(starts)
     pitches, confidences = [], []
-    for start in range(0, audio.shape[1], step):
+    t0 = time.perf_counter()
+    for ci, start in enumerate(starts):
         part = audio[:, start:start + step]
         pitch, conf = _predict(part, sr, hop, model, device, batch)
         pitches.append(pitch.detach().float().cpu().numpy().reshape(-1))
         confidences.append(conf.detach().float().cpu().numpy().reshape(-1))
         if device.type == "mps" and hasattr(torch.mps, "empty_cache"):
             torch.mps.empty_cache()
+        progress_bar(ci + 1, total,
+                     f"CREPE {model} · чанк {ci + 1}/{total}"
+                     f" · {time.perf_counter() - t0:.0f} c")
+    sys.stdout.write("\n")
+    sys.stdout.flush()
     return (np.concatenate(pitches).astype(np.float64),
             np.concatenate(confidences).astype(np.float64))
 
@@ -600,8 +627,10 @@ def _run_mps_guarded(samples, sr, hop, model, batch):
         status, *payload = queue.get()
         if status == "ok":
             return payload[0], payload[1]
+        sys.stdout.write("\n")  # дочерний бар мог остаться без перевода строки
         print(f"  ! CREPE на MPS вернул ошибку ({payload[0]}), повторяю на CPU")
     else:
+        sys.stdout.write("\n")
         print(f"  ! MPS-процесс погиб (exitcode {proc.exitcode}) — похоже на "
               "abort Metal-драйвера, повторяю на CPU")
     return _crepe_pass(samples, sr, torch.device("cpu"), hop, model, batch)
