@@ -516,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
     device = pick_device(args.device)
     print(f"{C.DIM}{describe(device)}{C.END}")
 
-    clip = load_clip(Path(args.input).expanduser(), device)
+    clip = load_clip(Path(args.input).expanduser())
     print(f"{C.BOLD}· загружено{C.END} {clip.path.name}: "
           f"{fmt_time(clip.seconds)} · {clip.source_sr} Hz -> 16 kHz mono")
 
@@ -532,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
           f"{time.perf_counter() - t:.1f} c")
 
     rms_hop = 512
-    rms = frame_rms(clip.samples, rms_hop, device)
+    rms = frame_rms(clip.samples, rms_hop)
     midi_low, midi_high = parse_range(args.note_range)
 
     notes = detect_notes(

@@ -20,8 +20,9 @@ Silicon через бэкенд **MPS** (PyTorch).
 
 - загрузка wav / flac / mp3 через soundfile (libsndfile), фолбэк — ffmpeg
   CLI. Не используется torchaudio.load, поэтому не нужен torchcodec;
-- предобработка на MPS: моно-миксдаун, ресемплинг до 16 kHz, highpass 30 Гц,
-  нормализация пика до −1 dBFS;
+- предобработка на CPU: моно-миксдаун, ресемплинг до 16 kHz, highpass 30 Гц,
+  нормализация пика до −1 dBFS (GPU-память впервые выделяется уже внутри
+  защищённого дочернего процесса — драйверный abort не убивает прогон);
 - питч-трекинг CREPE (full) через torchcrepe, декодирование Витерби,
   медианная фильтрация контура;
 - детекция онсетов (librosa) → сегментация контура → привязка к ближайшему
@@ -323,15 +324,21 @@ def check() -> int:
     return 0 if has_mps else 1
 `;
 
-const audioPy = String.raw`"""Загрузка и предобработка аудио целиком в torch (на MPS, когда доступен).
+const audioPy = String.raw`"""Загрузка и предобработка аудио.
 
 Чтение намеренно НЕ через torchaudio.load: в torchaudio >= 2.6 старые
 бэкенды (soundfile/ffmpeg) убрали, и load() требует отдельный пакет
 torchcodec (ImportError: "TorchCodec is required"). Вместо этого:
   1) soundfile (libsndfile) — wav/flac нативно, mp3 на libsndfile>=1.1;
   2) ffmpeg CLI — фолбэк для mp3 и всего, что умеет ffmpeg.
-Ресемплинг и фильтрация по-прежнему считаются на GPU через
-torchaudio.functional (эта часть API стабильна и не зависит от бэкендов).
+
+Про MPS важно: на ряде macOS (в частности 27.0) драйвер Metal abort'ит
+процесс при первом же крупном выделении общей GPU-памяти
+(IOGPUDeviceShmem), и SIGABRT не ловится try/except. Поэтому вся
+предобработка — миксдаун, ресемплинг, highpass, нормализация — считается
+на CPU: это секунды работы и гарантированно безопасно. В GPU сигнал
+уходит только внутри estimate_pitch, где MPS-инференс запущен в
+дочернем процессе с авто-откатом на CPU (см. pitch.py).
 """
 
 from __future__ import annotations
@@ -392,13 +399,17 @@ def _read_audio(path: Path):
     return torch.from_numpy(np.ascontiguousarray(data)), sr
 
 
-def load_clip(path: Path, device: torch.device) -> AudioClip:
-    """Загрузить файл, смикшировать в моно и ресемплировать до 16 kHz."""
+def load_clip(path: Path) -> AudioClip:
+    """Загрузить файл, смикшировать в моно и ресемплировать до 16 kHz.
+
+    Всё на CPU: торчим в GPU появится только под защитой дочернего
+    процесса (см. модуль pitch), поэтому driver-level abort нам не страшен.
+    """
     if not path.exists():
         raise FileNotFoundError(f"файл не найден: {path}")
 
-    wav, sr = _read_audio(path)
-    wav = wav.to(device=device, dtype=torch.float32)
+    wav, sr = _read_audio(path)                      # [каналы, сэмплы], CPU
+    wav = wav.to(dtype=torch.float32)
     if wav.shape[0] > 1:
         wav = wav.mean(dim=0, keepdim=True)
 
@@ -412,7 +423,7 @@ def load_clip(path: Path, device: torch.device) -> AudioClip:
         )
 
     wav = preprocess(wav)
-    samples = wav.squeeze(0).clamp(-1.0, 1.0).cpu().numpy().astype(np.float32)
+    samples = wav.squeeze(0).clamp(-1.0, 1.0).numpy().astype(np.float32)
     return AudioClip(samples, TARGET_SR, sr, path, samples.shape[0] / TARGET_SR)
 
 
@@ -428,13 +439,13 @@ def preprocess(wav: torch.Tensor) -> torch.Tensor:
     return wav
 
 
-def frame_rms(samples: np.ndarray, hop: int, device: torch.device,
-              win: int = 1024) -> np.ndarray:
-    """RMS-энергия по фреймам (для velocity). Считается на MPS одним тензором."""
-    x = torch.from_numpy(samples).to(device)
+def frame_rms(samples: np.ndarray, hop: int, win: int = 1024) -> np.ndarray:
+    """RMS-энергия по фреймам (для velocity). Операция лёгкая — считаем на CPU,
+    чтобы не плодить GPU-аллокации вне защищённого дочернего процесса."""
+    x = torch.from_numpy(samples)
     frames = x.unfold(0, win, hop) if x.numel() >= win else x.view(1, -1)
     rms = frames.pow(2).mean(dim=1).sqrt()
-    return rms.cpu().numpy()
+    return rms.numpy()
 `;
 
 const pitchPy = String.raw`"""Питч-трекинг CREPE (чистый PyTorch, пакет torchcrepe) — инференс на MPS.
@@ -492,7 +503,9 @@ _CENTS_REF_HZ = 10.0
 # «Failed to allocate IOGPUDeviceShmem» (Metal-драйвер macOS не ловится
 # try/except, поэтому не даём ему повода: меньше одновременных буферов).
 _CHUNK_SECONDS = 30.0
-_MPS_BATCH = 256       # мелкие батчи на MPS → меньше живых аллокаций
+_MPS_BATCH = 64        # консервативный батч на MPS: меньше живых аллокаций,
+                       # выше шанс, что драйвер Metal не abort'ит процесс
+                       # (подстраховка — авто-откат на CPU в estimate_pitch)
 
 
 def _medfilt1d(x: np.ndarray, kernel_size: int = 5) -> np.ndarray:
