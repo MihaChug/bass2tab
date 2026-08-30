@@ -418,6 +418,12 @@ const cliPy = String.raw`"""Консольный интерфейс bass2tabs.""
 
 from __future__ import annotations
 
+import os
+
+# ВЫСТАВИТЬ ДО ИМПОРТА TORCH: неподдерживаемые Metal-операции будут
+# прозрачно досчитываться на CPU вместо аварийного завершения процесса.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import argparse
 import time
 from pathlib import Path
@@ -460,6 +466,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="шаг питч-трекинга, мс (5-10)")
     p.add_argument("--model", default="full",
                    choices=("full", "tiny"))
+    p.add_argument("--batch", type=int, default=0,
+                   help="батч CREPE на GPU (0=авто: 256 mps / 2048 cpu); "
+                        "уменьшайте, если Metal abort'ится в IOGPUDeviceShmem")
     p.add_argument("--confidence", type=float, default=0.5,
                    help="порог уверенности голосовых фреймов")
     p.add_argument("--min-duration", type=float, default=0.08,
@@ -513,11 +522,14 @@ def main(argv: list[str] | None = None) -> int:
 
     t = time.perf_counter()
     pitch, confidence, hop = estimate_pitch(
-        clip.samples, clip.sr, device, hop_ms=args.hop_ms, model=args.model
+        clip.samples, clip.sr, device, hop_ms=args.hop_ms,
+        model=args.model, batch=args.batch or None
     )
     cents = hz_to_cents(pitch)
+    n_chunks = max(1, -(-clip.samples.size // (30 * clip.sr)))  # чанки по 30 c
     print(f"{C.BOLD}· CREPE-{args.model}{C.END} ({device}): {pitch.size} фреймов, "
-          f"hop {args.hop_ms:g} ms · {time.perf_counter() - t:.1f} c")
+          f"{n_chunks} чанк(ов) · hop {args.hop_ms:g} ms · "
+          f"{time.perf_counter() - t:.1f} c")
 
     rms_hop = 512
     rms = frame_rms(clip.samples, rms_hop, device)

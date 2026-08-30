@@ -80,6 +80,7 @@ Silicon через бэкенд **MPS** (PyTorch).
 | --device         | auto         | auto / mps / cpu / cuda                          |
 | --hop-ms         | 8            | шаг питч-трекинга, мс (5–10)                     |
 | --model          | full         | ёмкость CREPE: full / tiny                       |
+| --batch          | авто         | батч CREPE (256 mps / 2048 cpu); ↓ при Metal-абортах |
 | --confidence     | 0.5          | порог уверенности голосовых фреймов              |
 | --min-duration   | 0.08         | минимальная длительность ноты, с                 |
 | --range          | E1:G4        | допустимый диапазон (нотные имена)               |
@@ -124,6 +125,14 @@ Silicon через бэкенд **MPS** (PyTorch).
       brew install python@3.12
       python3.12 -m venv .venv && source .venv/bin/activate
       pip install -r requirements.txt && pip install -e .
+- «Assertion failed: Failed to allocate IOGPUDeviceShmem» и zsh: abort →
+  крах Metal-драйвера от слишком крупных GPU-аллокаций (SIGABRT, не
+  ловится try/except). В коде это закрыто: CREPE на MPS прогоняется в
+  ДОЧЕРНЕМ процессе, и при его гибели родитель автоматически повторяет
+  на CPU — транскрибация завершится в любом случае. Плюс чанки по 30 с,
+  очистка кэша Metal и PYTORCH_ENABLE_MPS_FALLBACK=1. Чтобы остаться на
+  GPU и снизить шанс аборта: --batch 128 / --batch 64; гарантированный
+  обход — --device cpu.
 - MPS недоступен → macOS < 12.3 или x86-сборка torch (проверьте file
   $(python -c "import torch; print(torch.__file__)"));
 - ноты «дробятся» → поднимите --min-duration или --confidence;
@@ -433,8 +442,13 @@ const pitchPy = String.raw`"""Питч-трекинг CREPE (чистый PyTorc
 CREPE — монофонический детектор высоты: CNN поверх сырой волны выдаёт
 распределение по 360 центовым бинам (по 20 центов, опора 10 Гц).
 torchcrepe — канонический PyTorch-порт модели из PyPI, поэтому инференс
-честно уходит на MPS через параметр device; при сбое Metal-операций
-прогон прозрачно повторяется на CPU.
+честно уходит на MPS через параметр device.
+
+Длинный трек прогоняется чанками по 30 секунд с очисткой Metal-кэша
+между ними и мелкими батчами на MPS — иначе Metal-драйвер macOS может
+упасть в «Failed to allocate IOGPUDeviceShmem» (abort, не ловится
+try/except). При сбое отдельного чанка на Metal он и весь остаток
+дочитываются на CPU.
 
 Установка: pip install "torchcrepe>=0.0.22"
 Пакет называется torchcrepe — одним словом. Имени torch-mel-crepe в PyPI
@@ -472,6 +486,13 @@ BASS_FMAX_HZ = 392.0   # G4 — верх типичного басового д�
 # CREPE измеряет высоту в центах относительно 10 Гц:
 # cents = 1200 * log2(f / 10)
 _CENTS_REF_HZ = 10.0
+
+# Трек прогоняется 30-секундными чанками: пиковые GPU-аллокации падают,
+# а Metal-кэш чистится между чанками — защита от драйверного abort
+# «Failed to allocate IOGPUDeviceShmem» (Metal-драйвер macOS не ловится
+# try/except, поэтому не даём ему повода: меньше одновременных буферов).
+_CHUNK_SECONDS = 30.0
+_MPS_BATCH = 256       # мелкие батчи на MPS → меньше живых аллокаций
 
 
 def _medfilt1d(x: np.ndarray, kernel_size: int = 5) -> np.ndarray:
@@ -511,29 +532,83 @@ def _predict(audio: torch.Tensor, sr: int, hop: int, model: str,
     return pitch, confidence
 
 
+def _crepe_pass(samples: np.ndarray, sr: int, device: torch.device,
+                hop: int, model: str, batch: int):
+    """Прогон CREPE по всему треку чанками на заданном устройстве.
+
+    Возвращает (pitch, confidence) — numpy-массивы float64. Чанки кратны
+    hop, поэтому сетка фреймов не «едет» на стыках; после каждого чанка
+    чистим кэш Metal, чтобы не коптить драйвер живыми аллокациями.
+    """
+    audio = torch.as_tensor(samples, dtype=torch.float32).reshape(1, -1)
+    step = max(hop, int(_CHUNK_SECONDS * sr) // hop * hop)
+    pitches, confidences = [], []
+    for start in range(0, audio.shape[1], step):
+        part = audio[:, start:start + step]
+        pitch, conf = _predict(part, sr, hop, model, device, batch)
+        pitches.append(pitch.detach().float().cpu().numpy().reshape(-1))
+        confidences.append(conf.detach().float().cpu().numpy().reshape(-1))
+        if device.type == "mps" and hasattr(torch.mps, "empty_cache"):
+            torch.mps.empty_cache()
+    return (np.concatenate(pitches).astype(np.float64),
+            np.concatenate(confidences).astype(np.float64))
+
+
+def _mps_worker(samples, sr, hop, model, batch, queue):
+    """Цель дочернего процесса: CREPE на MPS, результат — в очередь."""
+    try:
+        pitch, conf = _crepe_pass(samples, sr, torch.device("mps"),
+                                  hop, model, batch)
+        queue.put(("ok", pitch, conf))
+    except Exception as exc:  # noqa: BLE001 — родителю уйдёт статус "err"
+        queue.put(("err", repr(exc)))
+
+
+def _run_mps_guarded(samples, sr, hop, model, batch):
+    """MPS-инференс в дочернем процессе с авто-откатом на CPU.
+
+    Metal-драйвер macOS при нехватке общей памяти падает в SIGABRT
+    («Failed to allocate IOGPUDeviceShmem») — такой abort невозможно
+    перехватить try/except, он убивает процесс целиком. Поэтому тяжёлый
+    прогон делегируется дочернему процессу: если тот гибнет (exitcode
+    != 0) или сообщает об ошибке, родитель спокойно повторяет на CPU.
+    Точки входа (__main__.py, console-script) защищены guard'ом
+    if __name__ == "__main__", так что spawn безопасен.
+    """
+    import multiprocessing as mp
+
+    ctx = mp.get_context("spawn")
+    queue = ctx.Queue()
+    proc = ctx.Process(target=_mps_worker,
+                       args=(samples, sr, hop, model, batch, queue))
+    proc.start()
+    proc.join()
+    if proc.exitcode == 0 and not queue.empty():
+        status, *payload = queue.get()
+        if status == "ok":
+            return payload[0], payload[1]
+        print(f"  ! CREPE на MPS вернул ошибку ({payload[0]}), повторяю на CPU")
+    else:
+        print(f"  ! MPS-процесс погиб (exitcode {proc.exitcode}) — похоже на "
+              "abort Metal-драйвера, повторяю на CPU")
+    return _crepe_pass(samples, sr, torch.device("cpu"), hop, model, batch)
+
+
 def estimate_pitch(samples: np.ndarray, sr: int, device: torch.device,
-                   hop_ms: float = 8.0, model: str = "full"):
+                   hop_ms: float = 8.0, model: str = "full",
+                   batch: int | None = None):
     """Прогнать CREPE и вернуть (f0 в Гц, периодичность 0..1, hop в сэмплах)."""
     hop = max(16, int(sr * hop_ms / 1000))
-    batch = 1024 if device.type == "mps" else 2048
-    audio = torch.as_tensor(samples, dtype=torch.float32).reshape(1, -1)
+    # batch=None → авто: 256 на MPS / 2048 на CPU. Если драйвер склонен к
+    # abort'ам, уменьшайте вручную (флаг --batch: 128, 64, ...).
+    if batch is None:
+        batch = _MPS_BATCH if device.type == "mps" else 2048
+    batch = max(16, int(batch))
 
-    try:
-        pitch, confidence = _predict(audio, sr, hop, model, device, batch)
-    except RuntimeError as exc:
-        # Редкие операции CREPE могут быть не заведены на Metal —
-        # тогда повторяем на CPU и честно об этом говорим.
-        if device.type != "mps":
-            raise
-        print(f"  ! MPS-инференс упал ({type(exc).__name__}), повторяю на CPU")
-        pitch, confidence = _predict(
-            audio, sr, hop, model, torch.device("cpu"), batch
-        )
-
-    pitch = pitch.detach().float().cpu().numpy().reshape(-1).astype(np.float64)
-    confidence = (
-        confidence.detach().float().cpu().numpy().reshape(-1).astype(np.float64)
-    )
+    if device.type == "mps":
+        pitch, confidence = _run_mps_guarded(samples, sr, hop, model, batch)
+    else:
+        pitch, confidence = _crepe_pass(samples, sr, device, hop, model, batch)
 
     # Медианный фильтр (чистый numpy) добивает одиночные октавные скачки
     # декодера — без scipy, чтобы не зависеть от её бинарных расширений.

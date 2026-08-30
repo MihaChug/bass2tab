@@ -86,7 +86,7 @@ const STAGES: Stage[] = [
     title: "Питч-трекинг CREPE",
     engine: "torchcrepe · MPS",
     desc: "CNN full (~24.4M параметров) поверх мел-спектра отдаёт распределение по 360 центовым бинам на фрейм. Декодер Витерби собирает гладкий контур f0, hop — 8 мс.",
-    tags: ["model=full", "viterbi", "360 bins × 20¢"],
+    tags: ["model=full", "viterbi", "чанки 30 c", "360 bins × 20¢"],
     icon: ICONS.chip,
   },
   {
