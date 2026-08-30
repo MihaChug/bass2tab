@@ -18,9 +18,11 @@ Silicon через бэкенд **MPS** (PyTorch).
 
 ## Возможности
 
-- загрузка wav / flac / mp3 через torchaudio (soundfile → ffmpeg fallback);
-- предобработка на MPS: моно-миксдаун, ресемплинг до 16 kHz, highpass 30 Гц,
-  нормализация пика до −1 dBFS;
+- загрузка wav / flac / mp3 через soundfile (libsndfile), фолбэк — ffmpeg
+  CLI. Не используется torchaudio.load, поэтому не нужен torchcodec;
+- предобработка на CPU: моно-миксдаун, ресемплинг до 16 kHz, highpass 30 Гц,
+  нормализация пика до −1 dBFS (GPU-память впервые выделяется уже внутри
+  защищённого дочернего процесса — драйверный abort не убивает прогон);
 - питч-трекинг CREPE (full) через torchcrepe, декодирование Витерби,
   медианная фильтрация контура;
 - детекция онсетов (librosa) → сегментация контура → привязка к ближайшему
@@ -79,6 +81,7 @@ Silicon через бэкенд **MPS** (PyTorch).
 | --device         | auto         | auto / mps / cpu / cuda                          |
 | --hop-ms         | 8            | шаг питч-трекинга, мс (5–10)                     |
 | --model          | full         | ёмкость CREPE: full / tiny                       |
+| --batch          | авто         | батч CREPE (256 mps / 2048 cpu); ↓ при Metal-абортах |
 | --confidence     | 0.5          | порог уверенности голосовых фреймов              |
 | --min-duration   | 0.08         | минимальная длительность ноты, с                 |
 | --range          | E1:G4        | допустимый диапазон (нотные имена)               |
@@ -91,7 +94,8 @@ Silicon через бэкенд **MPS** (PyTorch).
 
 ## Как это устроено (коротко)
 
-1. torchaudio грузит файл и пересылает моно-сигнал 16 kHz на MPS;
+1. soundfile (или ffmpeg-CLI как фолбэк) читает файл, моно-сигнал 16 kHz
+   уходит на MPS;
    biquad-highpass 30 Гц убирает сценический гул, пик нормализуется.
 2. CREPE (модель full, ~24.4M параметров) считает вероятность 360 центовых
    бинов на фрейм; декодер Витерби по матрице переходов даёт гладкий контур
@@ -122,6 +126,14 @@ Silicon через бэкенд **MPS** (PyTorch).
       brew install python@3.12
       python3.12 -m venv .venv && source .venv/bin/activate
       pip install -r requirements.txt && pip install -e .
+- «Assertion failed: Failed to allocate IOGPUDeviceShmem» и zsh: abort →
+  крах Metal-драйвера от слишком крупных GPU-аллокаций (SIGABRT, не
+  ловится try/except). В коде это закрыто: CREPE на MPS прогоняется в
+  ДОЧЕРНЕМ процессе, и при его гибели родитель автоматически повторяет
+  на CPU — транскрибация завершится в любом случае. Плюс чанки по 30 с,
+  очистка кэша Metal и PYTORCH_ENABLE_MPS_FALLBACK=1. Чтобы остаться на
+  GPU и снизить шанс аборта: --batch 128 / --batch 64; гарантированный
+  обход — --device cpu.
 - MPS недоступен → macOS < 12.3 или x86-сборка torch (проверьте file
   $(python -c "import torch; print(torch.__file__)"));
 - ноты «дробятся» → поднимите --min-duration или --confidence;
@@ -136,7 +148,8 @@ Silicon через бэкенд **MPS** (PyTorch).
 
 ## Лицензия
 
-MIT. Зависимости: torch, torchaudio, torchcrepe, librosa, numpy,
+MIT. Зависимости: torch, torchaudio (только DSP-функционал), torchcrepe,
+librosa, soundfile, numpy,
 mido, PyGuitarPro (import guitarpro). scipy не используется: на macOS
 Tahoe 26.3+ её бинарные расширения падают при импорте (dyld,
 scipy/scipy#25635) — медианные фильтры реализованы на чистом numpy.
@@ -159,6 +172,11 @@ torchcrepe>=0.0.22,<0.1
 # но bass2tabs её больше не импортирует.
 librosa>=0.10
 numpy>=1.24,<2.1
+
+# Чтение wav/flac/mp3 — через soundfile (libsndfile), НЕ через
+# torchaudio.load: в torchaudio>=2.6 load() требует torchcodec, а
+# soundfile стабилен и уже стоит как зависимость librosa.
+soundfile>=0.12
 
 # экспорт
 mido>=1.3            # Standard MIDI File
@@ -189,6 +207,7 @@ dependencies = [
     "torchcrepe>=0.0.22,<0.1",
     "librosa>=0.10",
     "numpy>=1.24,<2.1",
+    "soundfile>=0.12",
     "mido>=1.3",
     "PyGuitarPro>=0.6",
 ]
@@ -272,8 +291,15 @@ def check() -> int:
     print("bass2tabs · проверка окружения")
     print(f"  torch            {torch.__version__}")
     try:
-        import torchcrepe
-        print(f"  torchcrepe       {torchcrepe.__version__}")
+        import torchcrepe  # noqa: F401 — проверяем, что импорт целиком здоров
+        # У torchcrepe нет атрибута __version__ — берём версию из
+        # метаданных установленного дистрибутива (dist-info).
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as _pkg_version
+        try:
+            print(f"  torchcrepe       {_pkg_version('torchcrepe')}")
+        except PackageNotFoundError:
+            print("  torchcrepe       установлен")
     except ImportError as exc:
         print(f"  torchcrepe       импорт не удался: {exc}")
         print("                     если pip show находит пакет — упала транзитивная "
@@ -298,15 +324,28 @@ def check() -> int:
     return 0 if has_mps else 1
 `;
 
-const audioPy = String.raw`"""Загрузка и предобработка аудио целиком в torch (на MPS, когда доступен).
+const audioPy = String.raw`"""Загрузка и предобработка аудио.
 
-torchaudio читает wav/flac нативно (libsndfile), mp3 — через soundfile
-(>= 0.13 умеет mp3) либо ffmpeg-бэкенд. Ресемплинг и фильтрация считаются
-на GPU, в numpy сигнал уходит только перед librosa/CREPE.
+Чтение намеренно НЕ через torchaudio.load: в torchaudio >= 2.6 старые
+бэкенды (soundfile/ffmpeg) убрали, и load() требует отдельный пакет
+torchcodec (ImportError: "TorchCodec is required"). Вместо этого:
+  1) soundfile (libsndfile) — wav/flac нативно, mp3 на libsndfile>=1.1;
+  2) ffmpeg CLI — фолбэк для mp3 и всего, что умеет ffmpeg.
+
+Про MPS важно: на ряде macOS (в частности 27.0) драйвер Metal abort'ит
+процесс при первом же крупном выделении общей GPU-памяти
+(IOGPUDeviceShmem), и SIGABRT не ловится try/except. Поэтому вся
+предобработка — миксдаун, ресемплинг, highpass, нормализация — считается
+на CPU: это секунды работы и гарантированно безопасно. В GPU сигнал
+уходит только внутри estimate_pitch, где MPS-инференс запущен в
+дочернем процессе с авто-откатом на CPU (см. pitch.py).
 """
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -326,17 +365,51 @@ class AudioClip:
     seconds: float
 
 
-def load_clip(path: Path, device: torch.device) -> AudioClip:
-    """Загрузить файл, смикшировать в моно и ресемплировать до 16 kHz."""
+def _read_audio(path: Path):
+    """(тензор [каналы, сэмплы] float32, sr). soundfile -> ffmpeg-CLI."""
+    # 1) soundfile / libsndfile: wav, flac (и mp3 на libsndfile>=1.1)
+    try:
+        import soundfile as sf
+        data, sr = sf.read(str(path), dtype="float32", always_2d=True)
+        return torch.from_numpy(np.ascontiguousarray(data.T)), int(sr)
+    except Exception:
+        pass
+
+    # 2) ffmpeg CLI: mp3 и всё остальное
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        raise RuntimeError(
+            f"soundfile не смог прочитать {path.name}, а ffmpeg/ffprobe "
+            "не найдены в PATH. Установите: brew install ffmpeg"
+        )
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-print_format", "json",
+         "-show_streams", str(path)],
+        capture_output=True, text=True, check=True,
+    )
+    info = next(s for s in json.loads(probe.stdout)["streams"]
+                if s.get("codec_type") == "audio")
+    sr = int(info["sample_rate"])
+    ch = int(info.get("channels", 2))
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path),
+         "-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"],
+        capture_output=True, check=True,
+    ).stdout
+    data = np.frombuffer(raw, dtype=np.float32).reshape(-1, ch).T
+    return torch.from_numpy(np.ascontiguousarray(data)), sr
+
+
+def load_clip(path: Path) -> AudioClip:
+    """Загрузить файл, смикшировать в моно и ресемплировать до 16 kHz.
+
+    Всё на CPU: торчим в GPU появится только под защитой дочернего
+    процесса (см. модуль pitch), поэтому driver-level abort нам не страшен.
+    """
     if not path.exists():
         raise FileNotFoundError(f"файл не найден: {path}")
 
-    try:
-        wav, sr = torchaudio.load(path, backend="soundfile")
-    except Exception:
-        wav, sr = torchaudio.load(path, backend="ffmpeg")  # mp3 и прочее
-
-    wav = wav.to(device=device, dtype=torch.float32)
+    wav, sr = _read_audio(path)                      # [каналы, сэмплы], CPU
+    wav = wav.to(dtype=torch.float32)
     if wav.shape[0] > 1:
         wav = wav.mean(dim=0, keepdim=True)
 
@@ -350,7 +423,7 @@ def load_clip(path: Path, device: torch.device) -> AudioClip:
         )
 
     wav = preprocess(wav)
-    samples = wav.squeeze(0).clamp(-1.0, 1.0).cpu().numpy().astype(np.float32)
+    samples = wav.squeeze(0).clamp(-1.0, 1.0).numpy().astype(np.float32)
     return AudioClip(samples, TARGET_SR, sr, path, samples.shape[0] / TARGET_SR)
 
 
@@ -366,13 +439,13 @@ def preprocess(wav: torch.Tensor) -> torch.Tensor:
     return wav
 
 
-def frame_rms(samples: np.ndarray, hop: int, device: torch.device,
-              win: int = 1024) -> np.ndarray:
-    """RMS-энергия по фреймам (для velocity). Считается на MPS одним тензором."""
-    x = torch.from_numpy(samples).to(device)
+def frame_rms(samples: np.ndarray, hop: int, win: int = 1024) -> np.ndarray:
+    """RMS-энергия по фреймам (для velocity). Операция лёгкая — считаем на CPU,
+    чтобы не плодить GPU-аллокации вне защищённого дочернего процесса."""
+    x = torch.from_numpy(samples)
     frames = x.unfold(0, win, hop) if x.numel() >= win else x.view(1, -1)
     rms = frames.pow(2).mean(dim=1).sqrt()
-    return rms.cpu().numpy()
+    return rms.numpy()
 `;
 
 const pitchPy = String.raw`"""Питч-трекинг CREPE (чистый PyTorch, пакет torchcrepe) — инференс на MPS.
@@ -380,8 +453,13 @@ const pitchPy = String.raw`"""Питч-трекинг CREPE (чистый PyTorc
 CREPE — монофонический детектор высоты: CNN поверх сырой волны выдаёт
 распределение по 360 центовым бинам (по 20 центов, опора 10 Гц).
 torchcrepe — канонический PyTorch-порт модели из PyPI, поэтому инференс
-честно уходит на MPS через параметр device; при сбое Metal-операций
-прогон прозрачно повторяется на CPU.
+честно уходит на MPS через параметр device.
+
+Длинный трек прогоняется чанками по 30 секунд с очисткой Metal-кэша
+между ними и мелкими батчами на MPS — иначе Metal-драйвер macOS может
+упасть в «Failed to allocate IOGPUDeviceShmem» (abort, не ловится
+try/except). При сбое отдельного чанка на Metal он и весь остаток
+дочитываются на CPU.
 
 Установка: pip install "torchcrepe>=0.0.22"
 Пакет называется torchcrepe — одним словом. Имени torch-mel-crepe в PyPI
@@ -419,6 +497,15 @@ BASS_FMAX_HZ = 392.0   # G4 — верх типичного басового д�
 # CREPE измеряет высоту в центах относительно 10 Гц:
 # cents = 1200 * log2(f / 10)
 _CENTS_REF_HZ = 10.0
+
+# Трек прогоняется 30-секундными чанками: пиковые GPU-аллокации падают,
+# а Metal-кэш чистится между чанками — защита от драйверного abort
+# «Failed to allocate IOGPUDeviceShmem» (Metal-драйвер macOS не ловится
+# try/except, поэтому не даём ему повода: меньше одновременных буферов).
+_CHUNK_SECONDS = 30.0
+_MPS_BATCH = 64        # консервативный батч на MPS: меньше живых аллокаций,
+                       # выше шанс, что драйвер Metal не abort'ит процесс
+                       # (подстраховка — авто-откат на CPU в estimate_pitch)
 
 
 def _medfilt1d(x: np.ndarray, kernel_size: int = 5) -> np.ndarray:
@@ -458,29 +545,83 @@ def _predict(audio: torch.Tensor, sr: int, hop: int, model: str,
     return pitch, confidence
 
 
+def _crepe_pass(samples: np.ndarray, sr: int, device: torch.device,
+                hop: int, model: str, batch: int):
+    """Прогон CREPE по всему треку чанками на заданном устройстве.
+
+    Возвращает (pitch, confidence) — numpy-массивы float64. Чанки кратны
+    hop, поэтому сетка фреймов не «едет» на стыках; после каждого чанка
+    чистим кэш Metal, чтобы не коптить драйвер живыми аллокациями.
+    """
+    audio = torch.as_tensor(samples, dtype=torch.float32).reshape(1, -1)
+    step = max(hop, int(_CHUNK_SECONDS * sr) // hop * hop)
+    pitches, confidences = [], []
+    for start in range(0, audio.shape[1], step):
+        part = audio[:, start:start + step]
+        pitch, conf = _predict(part, sr, hop, model, device, batch)
+        pitches.append(pitch.detach().float().cpu().numpy().reshape(-1))
+        confidences.append(conf.detach().float().cpu().numpy().reshape(-1))
+        if device.type == "mps" and hasattr(torch.mps, "empty_cache"):
+            torch.mps.empty_cache()
+    return (np.concatenate(pitches).astype(np.float64),
+            np.concatenate(confidences).astype(np.float64))
+
+
+def _mps_worker(samples, sr, hop, model, batch, queue):
+    """Цель дочернего процесса: CREPE на MPS, результат — в очередь."""
+    try:
+        pitch, conf = _crepe_pass(samples, sr, torch.device("mps"),
+                                  hop, model, batch)
+        queue.put(("ok", pitch, conf))
+    except Exception as exc:  # noqa: BLE001 — родителю уйдёт статус "err"
+        queue.put(("err", repr(exc)))
+
+
+def _run_mps_guarded(samples, sr, hop, model, batch):
+    """MPS-инференс в дочернем процессе с авто-откатом на CPU.
+
+    Metal-драйвер macOS при нехватке общей памяти падает в SIGABRT
+    («Failed to allocate IOGPUDeviceShmem») — такой abort невозможно
+    перехватить try/except, он убивает процесс целиком. Поэтому тяжёлый
+    прогон делегируется дочернему процессу: если тот гибнет (exitcode
+    != 0) или сообщает об ошибке, родитель спокойно повторяет на CPU.
+    Точки входа (__main__.py, console-script) защищены guard'ом
+    if __name__ == "__main__", так что spawn безопасен.
+    """
+    import multiprocessing as mp
+
+    ctx = mp.get_context("spawn")
+    queue = ctx.Queue()
+    proc = ctx.Process(target=_mps_worker,
+                       args=(samples, sr, hop, model, batch, queue))
+    proc.start()
+    proc.join()
+    if proc.exitcode == 0 and not queue.empty():
+        status, *payload = queue.get()
+        if status == "ok":
+            return payload[0], payload[1]
+        print(f"  ! CREPE на MPS вернул ошибку ({payload[0]}), повторяю на CPU")
+    else:
+        print(f"  ! MPS-процесс погиб (exitcode {proc.exitcode}) — похоже на "
+              "abort Metal-драйвера, повторяю на CPU")
+    return _crepe_pass(samples, sr, torch.device("cpu"), hop, model, batch)
+
+
 def estimate_pitch(samples: np.ndarray, sr: int, device: torch.device,
-                   hop_ms: float = 8.0, model: str = "full"):
+                   hop_ms: float = 8.0, model: str = "full",
+                   batch: int | None = None):
     """Прогнать CREPE и вернуть (f0 в Гц, периодичность 0..1, hop в сэмплах)."""
     hop = max(16, int(sr * hop_ms / 1000))
-    batch = 1024 if device.type == "mps" else 2048
-    audio = torch.as_tensor(samples, dtype=torch.float32).reshape(1, -1)
+    # batch=None → авто: 256 на MPS / 2048 на CPU. Если драйвер склонен к
+    # abort'ам, уменьшайте вручную (флаг --batch: 128, 64, ...).
+    if batch is None:
+        batch = _MPS_BATCH if device.type == "mps" else 2048
+    batch = max(16, int(batch))
 
-    try:
-        pitch, confidence = _predict(audio, sr, hop, model, device, batch)
-    except RuntimeError as exc:
-        # Редкие операции CREPE могут быть не заведены на Metal —
-        # тогда повторяем на CPU и честно об этом говорим.
-        if device.type != "mps":
-            raise
-        print(f"  ! MPS-инференс упал ({type(exc).__name__}), повторяю на CPU")
-        pitch, confidence = _predict(
-            audio, sr, hop, model, torch.device("cpu"), batch
-        )
-
-    pitch = pitch.detach().float().cpu().numpy().reshape(-1).astype(np.float64)
-    confidence = (
-        confidence.detach().float().cpu().numpy().reshape(-1).astype(np.float64)
-    )
+    if device.type == "mps":
+        pitch, confidence = _run_mps_guarded(samples, sr, hop, model, batch)
+    else:
+        pitch, confidence = _crepe_pass(samples, sr, device, hop, model, batch)
 
     # Медианный фильтр (чистый numpy) добивает одиночные октавные скачки
     # декодера — без scipy, чтобы не зависеть от её бинарных расширений.

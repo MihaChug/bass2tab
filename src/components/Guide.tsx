@@ -4,7 +4,7 @@ const STEPS = [
   {
     title: "Системные зависимости",
     cmd: "brew install ffmpeg",
-    note: "ffmpeg нужен для чтения mp3 через фолбэк-бэкенд torchaudio. wav и flac читаются libsndfile напрямую.",
+    note: "ffmpeg (CLI) — фолбэк-загрузчик для mp3 и экзотики; основной путь — soundfile (libsndfile), он читает wav/flac напрямую, а на libsndfile 1.1+ и mp3. torchaudio.load не используется, поэтому torchcodec не нужен.",
   },
   {
     title: "Структура: пакет ВНУТРИ проекта",
@@ -33,6 +33,7 @@ const CLI_ROWS: [string, string, string][] = [
   ["--device", "auto", "auto → mps → cuda → cpu; можно форсировать mps или cpu"],
   ["--hop-ms", "8", "шаг питч-трекинга, мс: 5 — плотнее для быстрых партий"],
   ["--model", "full", "ёмкость CREPE: full / tiny (веса, которые публикует torchcrepe)"],
+  ["--batch", "авто", "батч CREPE (256 mps / 2048 cpu); уменьшайте при Metal-абортах"],
   ["--confidence", "0.5", "порог «озвученных» фреймов: выше — меньше призрачных нот"],
   ["--min-duration", "0.08", "ноты короче порога отбрасываются как шум, сек"],
   ["--range", "E1:G4", "допустимый диапазон нотными именами"],

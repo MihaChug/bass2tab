@@ -47,6 +47,15 @@ const BLOCKS = [
     ],
     snippet: "fret = midi - open_string   # min(fret) при 0 ≤ fret ≤ 24",
   },
+  {
+    id: "mps-pattern",
+    title: "Почему DSP — на CPU, а на MPS уходит только CREPE",
+    body: [
+      "Сравнение с BassLift (FastAPI-сервер на том же torchcrepe) помогло поставить точку в причине IOGPUDeviceShmem-абортов: на проблемных macOS 27.x драйвер Metal спокойно отдаёт память под CNN-инференс (модель на 24M параметров, батчи фреймов — десятки МБ), но отказывается выделять крупные одиночные буферы. BassLift именно поэтому живёт: librosa и numpy считают всё на CPU, а на device уходят только фреймы CREPE.",
+      "Ранние версии bass2tabs гоняли по MPS целую волну (wav.to(mps) — десятки-сотни МБ) и ресемплинг с highpass через torchaudio.functional: промежуточные тензоры Kaiser-фильтра и были теми «крупными буферами». Теперь DSP на CPU, как у BassLift, но с тремя надстройками, которых там нет: чанки по 30 с с torch.mps.empty_cache(), консервативный батч 64 и инференс в subprocess — драйверный abort завершает только его, а транскрибация продолжается на CPU.",
+    ],
+    snippet: "на MPS — только CNN: батчи 64 × 1024 отсчёта (десятки МБ)\nна CPU — волна, ресемплинг, highpass, онсеты, темп, RMS",
+  },
 ];
 
 export function DeepDive() {
@@ -128,12 +137,24 @@ export function DeepDive() {
 
 const FAQ = [
   {
+    q: "Assertion failed: «Failed to allocate IOGPUDeviceShmem» и zsh: abort",
+    a: "Это падает не Python, а Metal-драйвер macOS 27.0: он abort'ит крупные выделения общей GPU-памяти (SIGABRT), и перехватить его try/except принципиально нельзя. В bass2tabs это закрыто с двух сторон. Во-первых, вся предобработка аудио — миксдаун, ресемплинг, highpass, нормализация — теперь считается на CPU: раньше именно первое wav.to(mps) с целой стерео-волной убивало процесс ещё до CREPE. Во-вторых, сам MPS-инференс CREPE запускается в ДОЧЕРНЕМ процессе: если драйвер его убивает (exitcode != 0), родитель ловит это и автоматически повторяет прогон на CPU — транскрибация завершится в любом случае. Дополнительно трек идёт чанками по 30 с с очисткой Metal-кэша, батч на MPS консервативный (64), а cli.py до импорта torch выставляет PYTORCH_ENABLE_MPS_FALLBACK=1. Обновите bass2tabs/audio.py, pitch.py и cli.py из «Исходников». Если хотите остаться на GPU и снизить шанс аборта: --batch 32, закройте GPU-прожорливые приложения. Гарантированный обход — --device cpu (точность та же, медленнее).",
+  },
+  {
     q: "«No module named bass2tabs» — Python не видит пакет",
     a: "python -m bass2tabs ищет каталог bass2tabs/ с __init__.py либо в текущей директории, либо среди установленных пакетов. Два решения. Быстрое: запускать команду из корня проекта — того каталога, внутри которого лежит bass2tabs/ (структура: bass2tabs/bass2tabs/__init__.py). Кардинальное: выполнить в корне проекта pip install -e . (файл pyproject.toml входит в состав) — пакет зарегистрируется в venv, команда будет работать из любой директории, а в PATH появится консольная команда bass2tabs.",
   },
   {
+    q: "ImportError: TorchCodec is required for load_with_torchcodec",
+    a: "В torchaudio 2.6+ полностью убрали старые бэкенды: аргумент backend=\"soundfile\"/\"ffmpeg\" в torchaudio.load игнорируется, и загрузка теперь всегда идёт через пакет torchcodec, которого нет в окружении. С версии 0.1.0 bass2tabs вообще не вызывает torchaudio.load: чтение сделано через soundfile (libsndfile — wav/flac, а на libsndfile 1.1+ и mp3) с фолбэком на ffmpeg CLI (brew install ffmpeg). torchaudio остался только для DSP-функционала (ресемплинг, highpass), который от бэкендов не зависит. Обновите bass2tabs/audio.py и requirements.txt — и ошибка исчезнет без установки torchcodec.",
+  },
+  {
     q: "ImportError: dlopen _spropack.so — «__thread_bss … offset field is not zero»",
     a: "Это падает scipy ≤ 1.16 на macOS Tahoe 26.3+: ужесточённый dyld перестал пропускать битые Mach-O-секции в её Fortran-расширениях (scipy/scipy#25635). С версии 0.1.0 сам bass2tabs scipy не импортирует — медианные фильтры написаны на чистом numpy (_medfilt1d в pitch.py). Но важно: scipy при импорте подгружают транзитивные зависимости librosa и torchcrepe. Поэтому на Python 3.10 ошибка не исчезает, а переезжает внутрь import torchcrepe и выглядит как «Не найден torchcrepe» — хотя pip show пакет находит. Надёжное лечение — пересоздать venv на Python 3.11+: туда pip поставит scipy ≥ 1.17, где PROPACK переписан на C и секции корректны. Целиком: brew install python@3.12 && python3.12 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && pip install -e .",
+  },
+  {
+    q: "BassLift (FastAPI + torchcrepe) на MPS работает, а bass2tabs раньше падал — почему?",
+    a: "Разница в том, что именно отправлялось на GPU. BassLift считает весь DSP — чтение, ресемплинг, фильтры, онсеты — в librosa/numpy на CPU, а на MPS уходят только батчи фреймов CNN CREPE (десятки МБ). Ранние версии bass2tabs держали на MPS целую волну и Kaiser-ресемплинг через torchaudio.functional: одиночные буферы на сотни мегабайт — именно их Metal-драйвер macOS 27.x отказывается выделять (IOGPUDeviceShmem abort). Текущая версия следует тому же безопасному паттерну (DSP на CPU), но идёт дальше: чанки по 30 с с очисткой Metal-кэша, батч 64 и инференс в subprocess с авто-откатом на CPU. У BassLift защиты нет вообще — случись abort, упадёт весь сервер. Вывод: если bass2tabs обновлён, он на вашем Mac как минимум не менее надёжен, чем BassLift.",
   },
   {
     q: "pip пишет «No matching distribution found for torch-mel-crepe»",

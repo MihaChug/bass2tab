@@ -12,7 +12,7 @@ const LINES: TermLine[] = [
   { text: "torch 2.5.1 · python 3.12 · macOS 14.5 · arm64", cls: "text-faint", pause: 140 },
   { text: "устройство: mps · выделено 0.0 MiB на старте", cls: "text-faint", pause: 260 },
   { text: "· загружено roundabout.wav: 3:47 · 44100 Hz → 16 kHz mono", cls: "text-dim", pause: 300 },
-  { text: "· CREPE-full (mps): 28 240 фреймов · hop 8 ms · 6.3 c", cls: "text-phos", pause: 300 },
+  { text: "· CREPE-full (mps): 28 240 фреймов · 7 чанков × 30 c · 6.3 c", cls: "text-phos", pause: 300 },
   { text: "· сегментация: 196 нот · темп 118 BPM · сетка 1/16", cls: "text-dim", pause: 300 },
   { text: "· итог: 196 нот · диапазон E1–G3 · 3:47 за 9.1 c", cls: "text-amber", pause: 420 },
   { text: "  ok out/roundabout.mid        (4.2 KB)", cls: "text-phos", pause: 130 },
