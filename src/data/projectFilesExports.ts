@@ -369,9 +369,14 @@ def write_gp5(notes, path: Path, tempo: float = 120.0,
     song = gp.Song()
     song.title = to_latin1(title)
     song.artist = to_latin1(artist)
-    song.tempo = int(round(tempo))
+    tempo_val = int(round(tempo))
+    song.tempo = gp.Tempo(tempo_val)
 
-    track = song.tracks[0]
+    # Трек: у свежей gp.Song() дефолтный трек уже есть, но подстрахуемся
+    # на случай, если в новой версии PyGuitarPro Song() создаётся пустым.
+    track = song.tracks[0] if song.tracks else gp.Track(song)
+    if not song.tracks:
+        song.tracks.append(track)
     track.name = "Bass"
     track.strings = [
         gp.GuitarString(number=i + 1, value=v)
@@ -381,13 +386,31 @@ def write_gp5(notes, path: Path, tempo: float = 120.0,
 
     max_beat = max((n.start_beat + n.beats for n in notes), default=4.0)
     n_bars = max(1, math.ceil(max_beat / 4.0))
-    first = track.measures[0]
-    for _ in range(n_bars - 1):
-        first.clone(song)
+
+    # Меры и их заголовки перестраиваем явно и синхронно. У Measure НЕТ
+    # метода clone (AttributeError в PyGuitarPro), поэтому клонировать
+    # первую меру нельзя — каждый такт создаётся заново.
+    # Такт 4/4 = 4 доли = 3840 тиков (доля = 960); в GP первый такт
+    # стартует с 960, а не с нуля.
+    song.measureHeaders = []
+    track.measures = []
+    for i in range(n_bars):
+        header = gp.MeasureHeader()
+        header.number = i + 1
+        header.start = 960 + i * 3840
+        header.tempo = gp.Tempo(tempo_val)
+        header.timeSignature.numerator = 4
+        header.timeSignature.denominator.value = 4
+        song.measureHeaders.append(header)
+        measure = gp.Measure(track, header)
+        # В GP5 у каждого такта два голоса; ноты кладём в первый,
+        # второй остаётся пустым (пауза) — формат этого требует.
+        measure.voices = [gp.Voice(measure), gp.Voice(measure)]
+        track.measures.append(measure)
 
     for bar, measure in enumerate(track.measures):
         voice = measure.voices[0]
-        voice.beats.clear()
+        voice.beats = []
 
         events = sorted(
             (n for n in notes if bar * 4 <= n.start_beat < (bar + 1) * 4),
@@ -402,12 +425,11 @@ def write_gp5(notes, path: Path, tempo: float = 120.0,
             steps = min(steps, BAR_STEPS - start16)
 
             beat = gp.Beat(voice, duration=gp.Duration(value=_duration_value(steps)))
-            fret, string = _fret_for(n.midi)
-            note = gp.Note(beat, string=string, value=n.midi)
-            try:
-                note.velocity = n.velocity
-            except AttributeError:
-                pass  # сборка guitarpro без velocity на ноте
+            _, string = _fret_for(n.midi)
+            # type=normal обязателен: дефолтный NoteType.rest записал бы
+            # в файл недопустимый байт типа ноты.
+            note = gp.Note(beat, value=n.midi, velocity=n.velocity, string=string,
+                           type=gp.NoteType.normal)
             beat.notes.append(note)
             voice.beats.append(beat)
             cursor = start16 + steps
