@@ -126,6 +126,8 @@ from pathlib import Path
 
 import mido
 
+from .text import to_latin1
+
 TPQ = 480  # тиков в четверти
 
 
@@ -135,7 +137,7 @@ def write_midi(notes, path: Path, tempo: float = 120.0,
     track = mido.MidiTrack()
     mid.tracks.append(track)
 
-    track.append(mido.MetaMessage("track_name", name=title, time=0))
+    track.append(mido.MetaMessage("track_name", name=to_latin1(title), time=0))
     track.append(mido.MetaMessage("time_signature", numerator=4,
                                   denominator=4, time=0))
     track.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(tempo), time=0))
@@ -325,6 +327,8 @@ from pathlib import Path
 
 import guitarpro as gp
 
+from .text import to_latin1
+
 # номер струны -> MIDI открытой струны; в GP струна 1 — самая высокая
 BASS_TUNING = [43, 38, 33, 28]  # G2 D2 A1 E1
 BAR_STEPS = 16                  # шестнадцатых в такте 4/4
@@ -363,8 +367,8 @@ def _add_rest(voice, steps: int) -> None:
 def write_gp5(notes, path: Path, tempo: float = 120.0,
               title: str = "Bass", artist: str = "") -> None:
     song = gp.Song()
-    song.title = title
-    song.artist = artist
+    song.title = to_latin1(title)
+    song.artist = to_latin1(artist)
     song.tempo = int(round(tempo))
 
     track = song.tracks[0]
@@ -595,6 +599,54 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 `;
 
+const textPy = String.raw`"""Приведение текста к latin-1 для форматов, не поддерживающих UTF-8.
+
+SMF (MIDI) и Guitar Pro 5 хранят текстовые поля (название, исполнитель,
+имя трека) в latin-1 — кириллица в них не помещается и валит запись:
+    UnicodeEncodeError: 'latin-1' codec can't encode characters ...
+
+Стратегия: сначала транслитерация кириллицы в читаемую латиницу
+(«Кейптаун» -> «Keyptaun»), затем NFKD-нормализация со снятием
+диакритики (é -> e, ü -> u) и, наконец, замена всех оставшихся
+не-latin-1 символов на '?'.
+
+MusicXML при этом остаётся в UTF-8 — там кириллица сохраняется как есть,
+к нему эта обработка не применяется.
+"""
+
+from __future__ import annotations
+
+import unicodedata
+
+_CYRILLIC = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+
+def to_latin1(text: str) -> str:
+    """Транслитерация кириллицы + гарантия кодируемости строки в latin-1."""
+    if not text:
+        return text
+    out = []
+    for ch in text:
+        mapped = _CYRILLIC.get(ch.lower())
+        if mapped is not None:
+            # сохраняем регистр: «Ж» -> «Zh», «ж» -> «zh»
+            out.append(mapped.capitalize() if ch.isupper() else mapped)
+        else:
+            out.append(ch)
+    text = "".join(out)
+    # NFKD + снятие диакритики: é -> e, ü -> u ...
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    # всё, что всё ещё не latin-1, заменяем на '?'
+    return text.encode("latin-1", errors="replace").decode("latin-1")
+`;
+
 const EXPORT_FILES: ProjectFile[] = [
   {
     path: "bass2tabs/notes.py",
@@ -623,6 +675,13 @@ const EXPORT_FILES: ProjectFile[] = [
     group: "Экспорт",
     note: "Guitar Pro 5: строй E–A–D–G, табулатура минимальным ладом",
     code: exportGp5Py,
+  },
+  {
+    path: "bass2tabs/text.py",
+    lang: "python",
+    group: "Экспорт",
+    note: "транслитерация кириллицы в latin-1 для метаданных MIDI/GP5",
+    code: textPy,
   },
   {
     path: "bass2tabs/cli.py",
