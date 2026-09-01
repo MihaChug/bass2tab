@@ -1,0 +1,34 @@
+# bass2tabs — метаданные пакета. После
+#     pip install -e .
+# команда python -m bass2tabs работает из ЛЮБОЙ директории (пакет
+# регистрируется в окружении), а в PATH появляется консольная команда
+# bass2tabs. Это штатная защита от «No module named bass2tabs».
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bass2tabs"
+version = "0.1.0"
+description = "Транскрибация бас-гитары: wav/flac/mp3 -> MIDI / MusicXML / GP5 (torch, Apple Silicon MPS)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["bass", "transcription", "midi", "musicxml", "guitar-pro", "mps", "apple-silicon"]
+dependencies = [
+    "torch>=2.1",
+    "torchaudio>=2.1",
+    "torchcrepe>=0.0.22,<0.1",
+    "librosa>=0.10",
+    "numpy>=1.24,<2.1",
+    "soundfile>=0.12",
+    "mido>=1.3",
+    "PyGuitarPro>=0.6",
+]
+
+[project.scripts]
+bass2tabs = "bass2tabs.cli:main"
+
+[tool.setuptools]
+packages = ["bass2tabs"]

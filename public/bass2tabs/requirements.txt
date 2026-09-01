@@ -1,0 +1,23 @@
+# ядро
+torch>=2.1
+torchaudio>=2.1
+
+# питч-трекинг CREPE (инференс на MPS)
+# ВАЖНО: пакет в PyPI называется torchcrepe — одним словом, без дефисов.
+# (имени torch-mel-crepe не существует: pip отдаст "No matching distribution")
+torchcrepe>=0.0.22,<0.1
+
+# DSP: онсеты и темп — librosa; медианные фильтры — чистый numpy.
+# scipy из прямых зависимостей УБРАНА: на macOS 26.3+ её Fortran-расширения
+# падают при импорте (dlopen _spropack.so, scipy/scipy#25635). Транзитивно
+# она всё равно приедет с librosa, но bass2tabs её больше не импортирует.
+librosa>=0.10
+numpy>=1.24,<2.1
+
+# чтение аудио: wav/flac (и mp3 на libsndfile 1.1+); фолбэк — ffmpeg CLI.
+# Не используется torchaudio.load, поэтому torchcodec не нужен.
+soundfile>=0.12
+
+# экспорт
+mido>=1.3            # Standard MIDI File
+PyGuitarPro>=0.6     # Guitar Pro 3-5 (.gp5); в коде импортируется как import guitarpro
