@@ -579,6 +579,10 @@ const FAQ = [
     q: "Кириллица в названии файла ломала экспорт — почему теперь нет?",
     a: "Форматы SMF (MIDI) и Guitar Pro 5 хранят текст в 8-битном latin-1 — UTF-8 туда не помещается. bass2tabs транслитерирует кириллицу в читаемую латиницу (модуль text.py: «Кейптаун» → «Keyptaun»), снимает диакритику, остаток заменяет на '?'. MusicXML — XML в UTF-8, там кириллица сохраняется как есть. Своё название — флаг --title.",
   },
+  {
+    q: "AttributeError: 'Measure' has no attribute 'clone' / cannot import name 'Tempo'",
+    a: "API PyGuitarPro нестабилен между сборками: в одних есть Measure.clone и класс Tempo, в других — нет (у Measure нет clone никогда; Tempo отсутствует в части версий). export_gp5.py поэтому не ссылается на них: меры строятся явно через MeasureHeader + Measure, а темп и размер меняются «по месту» в объектах, которые MeasureHeader() уже создал по умолчанию — с фолбэком на обычный int, если Tempo-объекта нет. Работает на всех версиях PyGuitarPro.",
+  },
 ];
 
 function Faq() {

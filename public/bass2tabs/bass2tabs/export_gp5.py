@@ -14,11 +14,6 @@ import guitarpro as gp
 
 from .text import to_latin1
 
-try:  # в части сборок Tempo отсутствует в top-level __all__
-    from guitarpro.models import Tempo as _Tempo
-except ImportError:  # pragma: no cover
-    _Tempo = gp.Tempo
-
 # номер струны -> MIDI открытой струны; в GP струна 1 — самая высокая
 BASS_TUNING = [43, 38, 33, 28]  # G2 D2 A1 E1
 BAR_STEPS = 16                  # шестнадцатых в такте 4/4
@@ -63,7 +58,7 @@ def write_gp5(notes, path: Path, tempo: float = 120.0,
     song.artist = to_latin1(artist)
     tempo_val = int(round(tempo))
     # Song.tempo по умолчанию — int (120), райтер ждёт именно int;
-    # в сам файл темп пишется из header.tempo (объект Tempo, ниже).
+    # в сам файл темп пишется из header.tempo (задаётся ниже, по месту).
     song.tempo = tempo_val
 
     # У свежей gp.Song() дефолтный трек уже есть, но подстрахуемся.
@@ -89,9 +84,18 @@ def write_gp5(notes, path: Path, tempo: float = 120.0,
         header = gp.MeasureHeader()
         header.number = i + 1
         header.start = 960 + i * 3840
-        header.tempo = _Tempo(tempo_val)
-        header.timeSignature.numerator = 4
-        header.timeSignature.denominator.value = 4
+        # Темп и размер: не ссылаемся на классы Tempo/TimeSignature — в части
+        # сборок PyGuitarPro их нет в models. Меняем значения «по месту» в
+        # объектах, которые MeasureHeader() уже создал по умолчанию.
+        try:
+            header.tempo.value = tempo_val      # объект с .value
+        except AttributeError:
+            header.tempo = tempo_val            # обычный int в других сборках
+        try:
+            header.timeSignature.numerator = 4
+            header.timeSignature.denominator.value = 4
+        except AttributeError:
+            pass                                # сборка без вложенного denominator
         song.measureHeaders.append(header)
         measure = gp.Measure(track, header)
         # В GP5 у каждого такта два голоса: ноты — в первый, второй пустой.
