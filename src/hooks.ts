@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 
 export function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
+  const [reduced, setReduced] = useState(false);
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReduced(mq.matches);
     const on = () => setReduced(mq.matches);
     mq.addEventListener("change", on);
     return () => mq.removeEventListener("change", on);
@@ -15,74 +12,57 @@ export function usePrefersReducedMotion(): boolean {
   return reduced;
 }
 
-export function useReveal<T extends HTMLElement>(threshold = 0.12) {
+export function useReveal<T extends HTMLElement>() {
   const ref = useRef<T | null>(null);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     const io = new IntersectionObserver(
       (entries) => {
-        for (const e of entries) {
+        entries.forEach((e) => {
           if (e.isIntersecting) {
-            e.target.classList.add("is-in");
+            e.target.classList.add("in");
             io.unobserve(e.target);
           }
-        }
+        });
       },
-      { threshold, rootMargin: "0px 0px -6% 0px" }
+      { threshold: 0.12, rootMargin: "0px 0px -8% 0px" }
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [threshold]);
+  }, []);
   return ref;
 }
 
-const GLYPHS = "▚▞▟▙#%&@$≡+×";
+const GLYPHS = "▓▒░<>/\\|=+*#e1a2d4";
 
-export function useScramble(text: string, startDelay = 200): string {
-  const reduced = usePrefersReducedMotion();
-  const [out, setOut] = useState(reduced ? text : text.replace(/./g, "\u00A0"));
+export function useScramble(text: string) {
+  const [out, setOut] = useState(text);
   useEffect(() => {
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (reduced) {
       setOut(text);
       return;
     }
     let frame = 0;
-    let raf = 0;
-    const total = text.length;
-    const tick = () => {
+    const total = 24;
+    const id = window.setInterval(() => {
       frame += 1;
-      const resolved = Math.floor(frame / 3);
-      if (resolved >= total) {
+      const settled = Math.floor((frame / total) * text.length);
+      setOut(
+        text
+          .split("")
+          .map((ch, i) =>
+            i < settled ? ch : GLYPHS[Math.floor(Math.random() * GLYPHS.length)]
+          )
+          .join("")
+      );
+      if (frame >= total) {
         setOut(text);
-        return;
+        window.clearInterval(id);
       }
-      let s = "";
-      for (let i = 0; i < total; i += 1) {
-        if (i < resolved) s += text[i];
-        else if (i < resolved + 5) s += GLYPHS[Math.floor(Math.random() * GLYPHS.length)];
-        else s += "\u00A0";
-      }
-      setOut(s);
-      raf = requestAnimationFrame(tick);
-    };
-    const timeout = window.setTimeout(() => {
-      raf = requestAnimationFrame(tick);
-    }, startDelay);
-    return () => {
-      window.clearTimeout(timeout);
-      cancelAnimationFrame(raf);
-    };
-  }, [text, reduced, startDelay]);
-  return out;
-}
-
-export function useNow(active: boolean, intervalMs = 1000): Date {
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    if (!active) return;
-    const id = window.setInterval(() => setNow(new Date()), intervalMs);
+    }, 42);
     return () => window.clearInterval(id);
-  }, [active, intervalMs]);
-  return now;
+  }, [text]);
+  return out;
 }
