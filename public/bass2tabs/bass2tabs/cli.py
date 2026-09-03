@@ -13,6 +13,8 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 from .audio import load_clip, frame_rms
 from .mps import pick_device, describe, check
 from .notes import detect_notes, estimate_tempo, midi_to_name, quantize
@@ -139,10 +141,26 @@ def process_one(path: Path, args, device, tag: str = "") -> dict:
         print(f"{C.BOLD}{tag}· сегментация{C.END}: {len(notes)} нот · "
               f"темп {tempo:g} BPM · сетка 1/{args.grid}")
 
+        conf_f = confidence[np.isfinite(confidence)]
+        if len(notes) < 5 and conf_f.size:
+            p50 = float(np.median(conf_f))
+            p90 = float(np.percentile(conf_f, 90))
+            above = float(np.mean(conf_f >= on_thr)) * 100.0
+            print(f"{C.DIM}{tag}· уверенность CREPE: p50 {p50:.2f} · p90 {p90:.2f}"
+                  f" · кадров ≥ {on_thr:g}: {above:.0f}%{C.END}")
+
         if not notes:
-            rep["error"] = "Нот не найдено — понизьте --on-thr (например, до 0.4)."
-            print(f"{C.WARN}{tag}Нот не найдено — понизьте --on-thr "
-                  f"(например, до 0.4).{C.END}")
+            msg = "Нот не найдено."
+            if conf_f.size:
+                # Совет: порог активации ~ 75-й процентиль уверенности,
+                # снэп к 0.05, порог сброса — на 0.15 ниже.
+                sugg_on = float(np.percentile(conf_f, 75))
+                sugg_on = min(0.6, max(0.15, round(sugg_on / 0.05) * 0.05))
+                sugg_off = round(max(0.1, sugg_on - 0.15), 2)
+                msg = (f"Нот не найдено — попробуйте "
+                       f"--on-thr {sugg_on:g} --off-thr {sugg_off:g}")
+            rep["error"] = msg
+            print(f"{C.WARN}{tag}{msg}{C.END}")
             return rep
 
         rep["notes"] = len(notes)
