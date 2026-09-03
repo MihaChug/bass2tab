@@ -43,8 +43,12 @@ CHUNK_SECONDS = 30.0     # длина чанка инференса
 FMIN, FMAX = 32.0, 500.0  # Гц (фильтр по MIDI-диапазону — в notes.py)
 
 # --- Пороговая обработка (защита от фантомов и дрожания высоты) -------------
-# Обнуление уверенности в абсолютной тишине (torchcrepe.threshold.Silence),
-# A-взвешенная громкость, дБ. Убирает фантомные ноты в паузах.
+# Обнуление уверенности в абсолютной тишине (по RMS, дБ отн. пика): убирает
+# фантомные ноты в паузах. ВАЖНО: намеренно НЕ используем
+# torchcrepe.threshold.Silence — он считает A-взвешенную громкость, а A-вес
+# ослабляет басовые фундаменты (41-100 Гц) на 22-43 дБ, из-за чего ВСЯ басовая
+# партия выглядит «тишиной» и уверенность обнуляется по всему треку (0 нот).
+# Для баса корректна невзвешенная громкость.
 SILENCE_DB = -60.0
 # Частотный гистерезис: «коридор» ~0.5–0.6 полутона. Пока высота не ушла за
 # коридор от текущего якоря, она удерживается — микро-вибрато и фазовые
@@ -53,38 +57,27 @@ FREQ_CORRIDOR_CENTS = 55.0
 
 
 def _medfilt1d(x: np.ndarray, k: int = 5) -> np.ndarray:
-    """Одномерный медианный фильтр, семантика scipy medfilt(k): нулевой
-    паддинг, нечётное окно. Чистый numpy, без scipy."""
+    """Одномерный медианный фильтр (нечётное окно, чистый numpy, без scipy).
+
+    Паддинг — краевой (edge), а не нулевой: нули на границах обнуляли бы
+    озвученные кадры в начале/конце трека после медианы.
+    """
     if x.size < 3 or k < 3:
         return x.copy()
     pad = k // 2
-    padded = np.pad(x, pad, mode="constant", constant_values=0)
+    padded = np.pad(x, pad, mode="edge")
     windows = np.lib.stride_tricks.sliding_window_view(padded, k)
     return np.median(windows, axis=1)
 
 
-def _apply_silence(conf, seg, sr, hop):
-    """Обнулить уверенность в абсолютной тишине (torchcrepe.threshold.Silence).
-
-    Выполняется на CPU — a_weighted гарантированно работает на CPU, независимо
-    от капризов Metal-драйвера. При любом сбое API возвращает conf без изменений:
-    страховочный слой (_silence_zero) отработает в estimate_pitch.
-    """
-    try:
-        silence = torchcrepe.threshold.Silence(value=SILENCE_DB)
-        c = conf.detach().cpu()
-        a = seg.detach().cpu().reshape(1, -1)
-        c = silence(c, a, sample_rate=sr, hop_length=hop, pad=True)
-        return c.to(conf.device)
-    except Exception:
-        return conf
-
-
 def _silence_zero(samples, hop, conf, db=SILENCE_DB):
-    """Страховочное обнуление уверенности в тишине по RMS исходного сигнала.
+    """Обнулить уверенность в абсолютной тишине (невзвешенный RMS, чистый numpy).
 
-    Зеркалит torchcrepe.threshold.Silence, но на чистом numpy — гарантированно
-    срабатывает, даже если вызов torchcrepe не состоялся. Идемпотентно.
+    Идея — как у torchcrepe.threshold.Silence (обнулить periodicity в тишине,
+    чтобы в паузах не рождались фантомные ноты), но громкость считаем БЕЗ
+    A-взвешивания: A-вес глушит басовые фундаменты на 22-43 дБ, и с ним весь
+    басовый трек выглядел бы «тишиной» (уверенность обнулилась бы целиком).
+    Идемпотентно; выполняется на CPU.
     """
     thr = 10 ** (db / 20.0)
     x = samples.detach().cpu().numpy().astype(np.float64)
@@ -151,8 +144,6 @@ def _crepe_pass(audio, sr, hop, model, device, batch) -> tuple[np.ndarray, np.nd
             seg.unsqueeze(0), sr, hop_length=hop, fmin=FMIN, fmax=FMAX,
             model=model, return_periodicity=True, device=device,
             batch_size=batch, pad=True, decoder=torchcrepe.decode.viterbi)
-        # Обнуление уверенности в абсолютной тишине — до гистерезиса.
-        conf = _apply_silence(conf, seg, sr, hop)
         all_pitch.append(pitch.squeeze(0).double().cpu().numpy())
         all_conf.append(conf.squeeze(0).double().cpu().numpy())
         if device.type != "mps":
@@ -238,8 +229,8 @@ def estimate_pitch(samples, sr, device, model="full", hop_ms=8.0, batch=0):
     else:
         pitch_hz, confidence = _crepe_pass(samples, sr, hop, model, device, batch)
 
-    # Страховочное обнуление уверенности в тишине (если torchcrepe.threshold.
-    # Silence в чанках не сработал). Идемпотентно.
+    # 1) Обнуление уверенности в абсолютной тишине (невзвешенный RMS) —
+    #    до гистерезиса: фантомные ноты в паузах не рождаются. Идемпотентно.
     confidence = _silence_zero(samples, hop, confidence, SILENCE_DB)
 
     with np.errstate(divide="ignore", invalid="ignore"):
