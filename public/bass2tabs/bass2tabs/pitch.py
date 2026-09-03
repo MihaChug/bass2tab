@@ -233,8 +233,13 @@ def estimate_pitch(samples, sr, device, model="full", hop_ms=8.0, batch=0):
     #    до гистерезиса: фантомные ноты в паузах не рождаются. Идемпотентно.
     confidence = _silence_zero(samples, hop, confidence, SILENCE_DB)
 
+    # Гц -> НАСТОЯЩИЕ центы относительно опоры 10 Гц: 1200·log2(f/10).
+    # ВАЖНО: множитель именно 1200 (в октаве 1200 центов). С множителем 100
+    # весь басовый диапазон съезжал в midi 3–8 и отбрасывался фильтром
+    # диапазона (28–64) — трек с отличной уверенностью давал 0 нот.
+    # Обратное преобразование в notes.py: midi = cents/100 + 3.4868.
     with np.errstate(divide="ignore", invalid="ignore"):
-        cents = 100.0 * np.log2(np.maximum(pitch_hz, 1e-6) / 10.0)
+        cents = 1200.0 * np.log2(np.maximum(pitch_hz, 1e-6) / 10.0)
     cents[~np.isfinite(cents)] = np.nan
 
     # Частотный гистерезис: коридор ~0.55 полутона удерживает высоту, гася
