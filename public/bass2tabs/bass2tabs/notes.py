@@ -170,4 +170,16 @@ def quantize(notes: list[Note], tempo: float, grid: int = 16) -> list[Note]:
         overflow = a.start_beat + a.beats - b.start_beat
         if overflow > 0:
             a.beats = max(step, a.beats - overflow)
-    return notes
+
+    # Дедупликация по старту: если квантование посадило две ноты в один слот
+    # сетки, оставляем более длинную (при равенстве — более громкую). Без
+    # этого сумма длительностей в такте превышала размер — MuseScore/Dorico
+    # ругались «incomplete measure» при открытии .musicxml.
+    dedup: list[Note] = []
+    for n in notes:
+        if dedup and n.start_beat == dedup[-1].start_beat:
+            if (n.beats, n.velocity) > (dedup[-1].beats, dedup[-1].velocity):
+                dedup[-1] = n
+        else:
+            dedup.append(n)
+    return dedup
