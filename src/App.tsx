@@ -15,19 +15,18 @@ import { CodeBrowser } from "./components/CodeBrowser";
 type TermLine = { text: string; cls: string; pause?: number };
 
 const LINES: TermLine[] = [
-  { text: "$ bass2tabs take.wav --on-thr 0.6 --off-thr 0.35 --highpass 32", cls: "text-paper", pause: 500 },
-  { text: "torch 2.13.0 · python 3.12 · macOS 27.0 · arm64", cls: "text-faint", pause: 140 },
-  { text: "устройство: mps", cls: "text-faint", pause: 220 },
-  { text: "· загружено take.wav: 4:02 · 44100 Hz -> 16 kHz mono · high-pass 32 Гц", cls: "text-dim", pause: 280 },
-  { text: "· питч-трекинг (CREPE full на mps)…", cls: "text-amber", pause: 200 },
-  { text: "  CREPE full · чанк 9/9 [████████████████████████] 100%", cls: "text-phos", pause: 420 },
-  { text: "· CREPE-full (mps): 28 240 фреймов · 9 чанков · 21.4 c", cls: "text-phos", pause: 280 },
-  { text: "· онсеты, темп и сегментация (гистерезис 0.6/0.35)…", cls: "text-amber", pause: 260 },
-  { text: "· сегментация: 196 нот · темп 118 BPM · сетка 1/16", cls: "text-dim", pause: 320 },
-  { text: "· экспорт (midi, musicxml, gp5)…", cls: "text-dim", pause: 200 },
-  { text: "  ok out/take.mid        (4.2 KB)", cls: "text-phos", pause: 130 },
-  { text: "  ok out/take.musicxml   (17.9 KB)", cls: "text-phos", pause: 130 },
-  { text: "  ok out/take.gp5        (21.4 KB · струны E–A–D–G)", cls: "text-phos", pause: 600 },
+  { text: "$ bass2tabs ~/Music/bass-takes -o out -r", cls: "text-paper", pause: 500 },
+  { text: "torch 2.13.0 · python 3.12 · macOS 27.0 · arm64 · устройство: mps", cls: "text-faint", pause: 180 },
+  { text: "▸ пакет: 3 файла из ~/Music/bass-takes", cls: "text-amber", pause: 320 },
+  { text: "[1/3] verse.wav", cls: "text-paper", pause: 200 },
+  { text: "  · CREPE-full (mps): 28 240 фреймов · 9 чанков · 21.4 c", cls: "text-phos", pause: 260 },
+  { text: "  · сегментация: 196 нот · 118 BPM · ok verse.mid/musicxml/gp5", cls: "text-dim", pause: 260 },
+  { text: "[2/3] chorus.wav", cls: "text-paper", pause: 200 },
+  { text: "  · сегментация: 231 нот · 118 BPM · ok chorus.mid/musicxml/gp5", cls: "text-dim", pause: 260 },
+  { text: "[3/3] bridge.mp3", cls: "text-paper", pause: 200 },
+  { text: "  · сегментация: 148 нот · 116 BPM · ok bridge.mid/musicxml/gp5", cls: "text-dim", pause: 320 },
+  { text: "════════════════════════════════════════════════", cls: "text-faint", pause: 120 },
+  { text: "· пакет готов: 3/3 файлов · 575 нот · 11:23 аудио · 58.7 c", cls: "text-phos", pause: 600 },
 ];
 
 function Terminal({ reduced }: { reduced: boolean }) {
@@ -615,6 +614,12 @@ function Install() {
                     note="гистерезис и high-pass уже по умолчанию — показаны явно для наглядности"
                   />
                 </div>
+                <div className="mt-4">
+                  <Command
+                    cmd="bass2tabs ~/Music/bass-takes -o out -r"
+                    note="папка вместо файла: все wav/flac/mp3 внутри (и во вложенных каталогах с -r), каждый — в свой .mid/.musicxml/.gp5; сбой одного файла не останавливает пакет"
+                  />
+                </div>
               </div>
 
               <div className="rounded-xl border border-line bg-panel p-6">
@@ -638,6 +643,7 @@ function Install() {
                         ["--tempo", "авто", "фиксированный BPM"],
                         ["--grid", "16", "сетка квантизации"],
                         ["--device", "auto", "auto/mps/cuda/cpu"],
+                        ["-r", "выкл", "папка: и вложенные каталоги"],
                       ].map(([f, d, m]) => (
                         <tr key={f} className="border-t border-line/60">
                           <td className="py-2 pr-4 text-amber">{f}</td>
@@ -683,6 +689,10 @@ const FAQ = [
   {
     q: "Ноты сливаются или, наоборот, дробятся — что крутить?",
     a: "Сливаются повторные атаки одной высоты — проверьте, что онсеты включены (они всегда включены и режут гистерезисные сегменты). Дробятся затухающие ноты — понизьте --off-thr (например, до 0.3) или --on-thr (до 0.5). Много ложных нот от касаний — поднимите --on-thr до 0.65–0.7. Слишком короткие обрывки — поднимите --min-duration.",
+  },
+  {
+    q: "Можно скормить сразу папку с записями, а не один файл?",
+    a: "Да: bass2tabs ~/Music/bass-takes -o out обработает все wav/flac/mp3 в папке (флаг -r добавит вложенные каталоги). Каждый файл получает собственный набор .mid/.musicxml/.gp5 с именем по имени исходника; в конце печатается сводка «N/M файлов · ноты · время». Ошибка на одном файле не прерывает пакет — он помечается «!!» в сводке, остальные доделываются.",
   },
 ];
 
