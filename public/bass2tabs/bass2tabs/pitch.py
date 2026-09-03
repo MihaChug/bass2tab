@@ -1,5 +1,16 @@
 """Питч-трекинг CREPE на MPS (torchcrepe).
 
+Декодирование — ВСЕГДА Витерби (не argmax): сглаживает траекторию частоты
+и минимизирует «октавные ошибки» (суб-бас не прыгает на октаву вверх).
+
+Пороговая обработка (защита от фантомов и дрожания высоты):
+  * обнуление уверенности в абсолютной тишине — torchcrepe.threshold.Silence
+    (A-взвешенная громкость, −60 дБ) + страховочный numpy-слой по RMS.
+    Убирает фантомные ноты в паузах;
+  * частотный гистерезис — «коридор» ~0.55 полутона: пока высота не ушла за
+    коридор, она удерживается. Микро-вибрато и фазовые искажения низких частот
+    не дробят одну ноту на быстрые полутоновые скачки при квантовании в MIDI.
+
 Устойчивость к «аллергичному» Metal-драйверу (macOS 26.3+ abort'ит крупные
 GPU-аллокации, IOGPUDeviceShmem):
   * трек режется на чанки по 30 c с очисткой Metal-кэша между ними;
@@ -31,6 +42,15 @@ except Exception as exc:  # pragma: no cover
 CHUNK_SECONDS = 30.0     # длина чанка инференса
 FMIN, FMAX = 32.0, 500.0  # Гц (фильтр по MIDI-диапазону — в notes.py)
 
+# --- Пороговая обработка (защита от фантомов и дрожания высоты) -------------
+# Обнуление уверенности в абсолютной тишине (torchcrepe.threshold.Silence),
+# A-взвешенная громкость, дБ. Убирает фантомные ноты в паузах.
+SILENCE_DB = -60.0
+# Частотный гистерезис: «коридор» ~0.5–0.6 полутона. Пока высота не ушла за
+# коридор от текущего якоря, она удерживается — микро-вибрато и фазовые
+# искажения низких частот не дробят одну ноту на полутоновые скачки.
+FREQ_CORRIDOR_CENTS = 55.0
+
 
 def _medfilt1d(x: np.ndarray, k: int = 5) -> np.ndarray:
     """Одномерный медианный фильтр, семантика scipy medfilt(k): нулевой
@@ -41,6 +61,65 @@ def _medfilt1d(x: np.ndarray, k: int = 5) -> np.ndarray:
     padded = np.pad(x, pad, mode="constant", constant_values=0)
     windows = np.lib.stride_tricks.sliding_window_view(padded, k)
     return np.median(windows, axis=1)
+
+
+def _apply_silence(conf, seg, sr, hop):
+    """Обнулить уверенность в абсолютной тишине (torchcrepe.threshold.Silence).
+
+    Выполняется на CPU — a_weighted гарантированно работает на CPU, независимо
+    от капризов Metal-драйвера. При любом сбое API возвращает conf без изменений:
+    страховочный слой (_silence_zero) отработает в estimate_pitch.
+    """
+    try:
+        silence = torchcrepe.threshold.Silence(value=SILENCE_DB)
+        c = conf.detach().cpu()
+        a = seg.detach().cpu().reshape(1, -1)
+        c = silence(c, a, sample_rate=sr, hop_length=hop, pad=True)
+        return c.to(conf.device)
+    except Exception:
+        return conf
+
+
+def _silence_zero(samples, hop, conf, db=SILENCE_DB):
+    """Страховочное обнуление уверенности в тишине по RMS исходного сигнала.
+
+    Зеркалит torchcrepe.threshold.Silence, но на чистом numpy — гарантированно
+    срабатывает, даже если вызов torchcrepe не состоялся. Идемпотентно.
+    """
+    thr = 10 ** (db / 20.0)
+    x = samples.detach().cpu().numpy().astype(np.float64)
+    n_frames = conf.shape[0]
+    need = n_frames * hop
+    if x.shape[0] < need:
+        x = np.pad(x, (0, need - x.shape[0]))
+    x = x[:need].reshape(n_frames, hop)
+    rms = np.sqrt(np.mean(x * x, axis=1))
+    out = conf.copy()
+    out[rms < thr] = 0.0
+    return out
+
+
+def _freq_hysteresis(cents, corridor_cents=FREQ_CORRIDOR_CENTS):
+    """Частотный гистерезис («мёртвая зона» ~0.5–0.6 полутона).
+
+    Идём по траектории высоты и удерживаем «якорь»: пока новое значение не
+    ушло за коридор от текущего якоря, выводим якорь. Реальное изменение высоты
+    (интервал больше коридора) обновляет якорь. Это гасит микро-вибрато и
+    фазовые искажения, не давая одной ноте расщепиться на быстрые полутоновые
+    скачки при квантовании в MIDI. Неозвученные кадры (NaN) сбрасывают якорь.
+    """
+    out = np.empty_like(cents)
+    anchor = np.nan
+    for i in range(cents.shape[0]):
+        c = cents[i]
+        if not np.isfinite(c):
+            out[i] = np.nan
+            anchor = np.nan
+            continue
+        if not np.isfinite(anchor) or abs(c - anchor) > corridor_cents:
+            anchor = c  # настоящее изменение высоты
+        out[i] = anchor
+    return out
 
 
 def progress_bar(done: int, total: int, label: str = "", width: int = 24) -> None:
@@ -65,10 +144,15 @@ def _crepe_pass(audio, sr, hop, model, device, batch) -> tuple[np.ndarray, np.nd
     for ci in range(n_chunks):
         seg = audio[ci * chunk:(ci + 1) * chunk]
         t0 = time.perf_counter()
+        # Декодер — ВСЕГДА Витерби (не argmax): он математически сглаживает
+        # траекторию частоты и минимизирует «октавные ошибки» (суб-бас не
+        # прыгает на октаву вверх).
         pitch, conf = torchcrepe.predict(
             seg.unsqueeze(0), sr, hop_length=hop, fmin=FMIN, fmax=FMAX,
             model=model, return_periodicity=True, device=device,
             batch_size=batch, pad=True, decoder=torchcrepe.decode.viterbi)
+        # Обнуление уверенности в абсолютной тишине — до гистерезиса.
+        conf = _apply_silence(conf, seg, sr, hop)
         all_pitch.append(pitch.squeeze(0).double().cpu().numpy())
         all_conf.append(conf.squeeze(0).double().cpu().numpy())
         if device.type != "mps":
@@ -144,9 +228,17 @@ def estimate_pitch(samples, sr, device, model="full", hop_ms=8.0, batch=0):
     else:
         pitch_hz, confidence = _crepe_pass(samples, sr, hop, model, device, batch)
 
+    # Страховочное обнуление уверенности в тишине (если torchcrepe.threshold.
+    # Silence в чанках не сработал). Идемпотентно.
+    confidence = _silence_zero(samples, hop, confidence, SILENCE_DB)
+
     with np.errstate(divide="ignore", invalid="ignore"):
         cents = 100.0 * np.log2(np.maximum(pitch_hz, 1e-6) / 10.0)
     cents[~np.isfinite(cents)] = np.nan
+
+    # Частотный гистерезис: коридор ~0.55 полутона удерживает высоту, гася
+    # микро-вибрато и фазовые искажения (одна нота не дробится на скачки).
+    cents = _freq_hysteresis(cents, FREQ_CORRIDOR_CENTS)
 
     # Медианный фильтр (чистый numpy) добивает одиночные октавные скачки
     # декодера — без scipy, чтобы не зависеть от её бинарных расширений.

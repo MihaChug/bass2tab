@@ -111,7 +111,7 @@ function Equalizer() {
 
 /* ================= hero ================= */
 
-const BADGES = ["torch ≥ 2.1", "MPS", "CREPE-full", "гистерезис 0.6/0.35", "HP 32 Гц", "MIDI", "MusicXML", "GP5"];
+const BADGES = ["torch ≥ 2.1", "MPS", "CREPE-full · viterbi", "гистерезис 0.6/0.35", "HP 32 Гц", "silence −60 дБ", "коридор 0.55 пт", "MIDI", "MusicXML", "GP5"];
 
 function Hero() {
   const reduced = usePrefersReducedMotion();
@@ -149,7 +149,8 @@ function Hero() {
                 <span className="font-mono text-[14px] text-phos">MPS</span>. Ноты выделяются
                 двухпороговой гистерезисной системой — <span className="text-amber">0.6</span> на
                 включение, <span className="text-amber">0.35</span> на сброс, — а перед CREPE сигнал
-                проходит high-pass 32&nbsp;Гц. Разделение микса не требуется.
+                проходит high-pass 32&nbsp;Гц. Высота декодируется Витерби, тишина обнуляется,
+                частотный коридор ~0.55 полутона гасит вибрато. Разделение микса не требуется.
               </p>
             </Reveal>
 
@@ -206,7 +207,8 @@ function Hero() {
 
 const ITEMS = [
   "wav → midi", "flac → musicxml", "mp3 → gp5", "torch · mps", "crepe-full · viterbi",
-  "on 0.60 / off 0.35", "high-pass 32 Гц", "диапазон E1–G4", "сетка 1/16", "строй E–A–D–G",
+  "on 0.60 / off 0.35", "high-pass 32 Гц", "silence −60 дБ", "коридор 0.55 полутона",
+  "диапазон E1–G4", "сетка 1/16", "строй E–A–D–G",
 ];
 
 function Marquee() {
@@ -296,8 +298,8 @@ const STAGES = [
   },
   {
     num: "03", title: "Питч-трекинг CREPE", engine: "torchcrepe · MPS",
-    desc: "CNN full (~24.4M параметров) поверх мел-спектра, декодер Витерби собирает гладкий контур f0, hop 8 мс. Чанки по 30 c с очисткой Metal-кэша; инференс — в subprocess с авто-откатом на CPU.",
-    tags: ["model=full", "viterbi", "чанки 30 c"], icon: ICONS.chip,
+    desc: "CNN full (~24.4M параметров) поверх мел-спектра; декодирование — всегда Витерби (не argmax): сглаживает траекторию f0 и минимизирует октавные ошибки. Затем обнуление уверенности в тишине (Silence −60 дБ) и частотный гистерезис-коридор ~0.55 полутона. Чанки по 30 c, инференс — в subprocess с авто-откатом на CPU.",
+    tags: ["viterbi", "silence −60 дБ", "коридор 0.55 пт", "чанки 30 c"], icon: ICONS.chip,
   },
   {
     num: "04", title: "Гистерезис + онсеты", engine: "триггер Шмитта · librosa",
@@ -481,6 +483,47 @@ function Hysteresis() {
             </Reveal>
           </div>
         </div>
+
+        <Reveal delay={80}>
+          <div className="mt-8 rounded-xl border border-line bg-ink-2/60 p-6 sm:p-7">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 className="font-display text-[15px] font-bold text-paper">Три слоя защиты высоты</h3>
+              <span className="font-mono text-[10.5px] text-faint">pitch.py · до квантования в MIDI</span>
+            </div>
+            <div className="mt-5 grid gap-5 md:grid-cols-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber" aria-hidden="true" />
+                  <h4 className="font-mono text-[12px] font-bold uppercase tracking-wider text-amber">Витерби</h4>
+                </div>
+                <p className="mt-2.5 text-[13px] leading-relaxed text-dim">
+                  Декодирование — всегда Витерби, не argmax: сглаживает траекторию f0
+                  и минимизирует «октавные ошибки» — суб-бас не прыгает на октаву вверх.
+                </p>
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="h-1.5 w-1.5 rounded-full bg-phos" aria-hidden="true" />
+                  <h4 className="font-mono text-[12px] font-bold uppercase tracking-wider text-phos">Тишина −60 дБ</h4>
+                </div>
+                <p className="mt-2.5 text-[13px] leading-relaxed text-dim">
+                  torchcrepe.threshold.Silence (A-взвешенно) обнуляет уверенность в паузах
+                  + numpy-страховка по RMS. Фантомные ноты в тишине исчезают.
+                </p>
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="h-1.5 w-1.5 rounded-full bg-paper" aria-hidden="true" />
+                  <h4 className="font-mono text-[12px] font-bold uppercase tracking-wider text-paper">Коридор 0.55 пт</h4>
+                </div>
+                <p className="mt-2.5 text-[13px] leading-relaxed text-dim">
+                  Частотный гистерезис: пока высота не ушла за ~0.55 полутона, она удерживается.
+                  Вибрато и фазовые искажения не дробят ноту на полутоновые скачки.
+                </p>
+              </div>
+            </div>
+          </div>
+        </Reveal>
 
         <Reveal delay={120}>
           <div className="mt-8 grid gap-4 sm:grid-cols-3">
@@ -693,6 +736,10 @@ const FAQ = [
   {
     q: "Можно скормить сразу папку с записями, а не один файл?",
     a: "Да: bass2tabs ~/Music/bass-takes -o out обработает все wav/flac/mp3 в папке (флаг -r добавит вложенные каталоги). Каждый файл получает собственный набор .mid/.musicxml/.gp5 с именем по имени исходника; в конце печатается сводка «N/M файлов · ноты · время». Ошибка на одном файле не прерывает пакет — он помечается «!!» в сводке, остальные доделываются.",
+  },
+  {
+    q: "Откуда берётся защита от фантомных нот в паузах и дробления нот вибрато?",
+    a: "Три слоя в pitch.py. (1) Декодирование — всегда Витерби, а не argmax: он математически сглаживает траекторию частоты и минимизирует «октавные ошибки» (суб-бас не прыгает на октаву). (2) Перед гистерезисом уверенность обнуляется в абсолютной тишине — torchcrepe.threshold.Silence (A-взвешенно, −60 дБ) плюс страховочный numpy-слой по RMS: фантомные ноты в паузах исчезают. (3) Частотный гистерезис — коридор ~0.55 полутона: пока высота не ушла за коридор, она удерживается, поэтому микро-вибрато и фазовые искажения низких частот не дробят одну ноту на быстрые полутоновые скачки.",
   },
 ];
 
