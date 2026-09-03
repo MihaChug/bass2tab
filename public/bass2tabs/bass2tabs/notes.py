@@ -43,6 +43,17 @@ def cents_to_midi(cents: float) -> int:
     return int(round(cents / 100.0 + 3.4868))
 
 
+def _to_numpy(x):
+    """Привести torch.Tensor (или массив) к numpy.ndarray.
+
+    librosa требует именно ndarray (isinstance-проверка), поэтому сюда может
+    приехать torch-тензор из audio.py — конвертируем через CPU.
+    """
+    if hasattr(x, "detach"):
+        return x.detach().cpu().numpy()
+    return np.asarray(x)
+
+
 def hysteresis_segments(confidence: np.ndarray,
                         on_thr: float = 0.6, off_thr: float = 0.35,
                         min_frames: int = 3) -> list[tuple[int, int]]:
@@ -82,6 +93,7 @@ def detect_notes(samples, sr, hop, cents, confidence, rms, rms_hop,
     """
     import librosa
 
+    y = _to_numpy(samples)  # librosa принимает только numpy.ndarray
     times = np.arange(len(cents)) * (hop / sr)
 
     # 1) грубые «звучащие» сегменты — двухпороговая гистерезис-сегментация
@@ -91,7 +103,7 @@ def detect_notes(samples, sr, hop, cents, confidence, rms, rms_hop,
 
     # 2) атаки во всём треке — чтобы разрезать залипшие повторные ноты
     onset_frames = librosa.onset.onset_detect(
-        y=samples, sr=sr, backtrack=True, units="frames", hop_length=hop)
+        y=y, sr=sr, backtrack=True, units="frames", hop_length=hop)
     onsets = sorted({int(f) for f in onset_frames})
 
     # 3) каждый звучащий сегмент режем онсетами -> отдельные ноты
@@ -132,7 +144,7 @@ def detect_notes(samples, sr, hop, cents, confidence, rms, rms_hop,
 def estimate_tempo(samples, sr) -> float:
     """Авто-темп по beat_track, приведённый к диапазону 70-170 BPM."""
     import librosa
-    tempo, _ = librosa.beat.beat_track(y=samples, sr=sr)
+    tempo, _ = librosa.beat.beat_track(y=_to_numpy(samples), sr=sr)
     bpm = float(np.atleast_1d(tempo)[0])
     while bpm < 70:
         bpm *= 2
