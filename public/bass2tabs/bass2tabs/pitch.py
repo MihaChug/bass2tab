@@ -208,8 +208,15 @@ def _run_mps_guarded(audio, sr, hop, model, batch):
             and isinstance(result[0], np.ndarray):
         return result[0].astype(np.float64), result[1].astype(np.float64)
 
-    print("\n  ! MPS-процесс погиб (вероятно, abort Metal-драйвера) — повторяю на CPU",
-          flush=True)
+    # Различаем сценарии: воркер поймал исключение (сообщение лежит в очереди)
+    # или процесс был убит снаружи (abort Metal-драйвера — очередь пуста).
+    if isinstance(result, tuple) and len(result) == 2 \
+            and isinstance(result[0], str):
+        print(f"\n  ! ошибка внутри MPS-процесса: {result[1]} — повторяю на CPU",
+              flush=True)
+    else:
+        print("\n  ! MPS-процесс погиб (вероятно, abort Metal-драйвера) — "
+              "повторяю на CPU", flush=True)
     return _crepe_pass(audio, sr, hop, model, torch.device("cpu"), batch * 2)
 
 
@@ -219,7 +226,10 @@ def estimate_pitch(samples, sr, device, model="full", hop_ms=8.0, batch=0):
     cents — относительно опоры 10 Гц (midi = cents/100 + 3.4868).
     """
     hop = max(1, int(round(sr * hop_ms / 1000.0)))
-    hop -= hop % 160                      # сетка CREPE кратна 160 на 16 kHz
+    # Округляем ВВЕРХ до кратного 160 — нативной сетке CREPE на 16 kHz
+    # (10 мс). Округление вниз при hop_ms <= 10 давало hop = 0 и роняло
+    # predict на целочисленном делении (ZeroDivisionError).
+    hop = max(160, ((hop + 159) // 160) * 160)
     if batch <= 0:
         batch = 64 if device.type == "mps" else 2048
 
