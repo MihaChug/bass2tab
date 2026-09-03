@@ -1,110 +1,103 @@
-"""Загрузка аудио и предобработка на CPU.
+"""Чтение wav/flac/mp3 и предобработка на CPU.
 
-Чтение — через soundfile (libsndfile: wav/flac нативно, mp3 на 1.1+),
-фолбэк — ffmpeg CLI. НЕ используется torchaudio.load: в torchaudio>=2.6
-он игнорирует аргумент backend и требует отдельный пакет torchcodec.
+Чтение — soundfile (libsndfile), фолбэк — ffmpeg CLI. Не используется
+torchaudio.load, поэтому torchcodec не нужен. DSP (моно-миксдаун,
+ресемплинг до 16 kHz, high-pass 30-35 Гц, нормализация пика) считается на
+CPU через torchaudio.functional — от бэкендов ввода-вывода он не зависит.
 
-Вся предобработка (миксдаун, ресемплинг, highpass, нормализация) считается
-на CPU. Первое выделение GPU-памяти должно происходить только внутри
-защищённого дочернего процесса CREPE — иначе Metal-драйвер macOS может
-abort'ить процесс на крупных одиночных буферах (IOGPUDeviceShmem).
+HIGH-PASS перед CREPE: срез ~32 Гц убирает сценический гул, рокот и
+постоянную составляющую, поднимая уверенность нейросети в полезных фреймах
+(периодичность ниже E1≈41 Гц басу в стандартном строе не нужна).
 """
 
 from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import torch
-import torchaudio.functional as F
+import torchaudio.functional as AF
 
-TARGET_SR = 16000  # CREPE обучен на 16 kHz
-_PEAK_DBFS = -1.0
+TARGET_SR = 16000        # CREPE обучен на 16 kHz
+HIGHPASS_HZ = 32.0       # срез high-pass в диапазоне 30-35 Гц
 
 
 @dataclass
 class Clip:
     path: Path
-    samples: np.ndarray  # float32, mono, 16 kHz
+    samples: torch.Tensor   # float32 [N], моно, 16 kHz, CPU
     sr: int
-    source_sr: int
-
-    @property
-    def seconds(self) -> float:
-        return self.samples.size / self.sr
+    src_sr: int
+    duration: float
 
 
-def _ffmpeg_decode(path: Path) -> tuple[np.ndarray, int]:
-    """Декодирование через ffmpeg CLI (для mp3 и всего, что не взял soundfile)."""
+def _read_audio(path: Path) -> tuple[np.ndarray, int]:
+    """Вернуть (float32 [ch, N], sr). wav/flac — soundfile, прочее — ffmpeg."""
+    import soundfile as sf
+    try:
+        data, sr = sf.read(str(path), dtype="float32", always_2d=True)
+        return data.T, int(sr)
+    except Exception:
+        pass
+
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError(
+            f"soundfile не смог прочитать {path.name}, а ffmpeg не найден. "
+            "Для mp3/m4a установите ffmpeg: brew install ffmpeg"
+        )
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a:0",
          "-show_entries", "stream=sample_rate,channels",
          "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True, check=True,
-    )
-    first = probe.stdout.strip().splitlines()[0]
-    sr_s, ch_s = first.split(",")[:2]
-    sr, channels = int(sr_s), int(ch_s)
+        capture_output=True, text=True, check=True).stdout.strip()
+    sr_str, ch_str = probe.split(",")[:2]
+    sr, ch = int(sr_str), int(ch_str)
 
     raw = subprocess.run(
         ["ffmpeg", "-v", "error", "-i", str(path),
-         "-f", "f32le", "-acodec", "pcm_f32le",
-         "-ac", str(channels), "-ar", str(sr), "-"],
-        capture_output=True, check=True,
-    ).stdout
-    data = np.frombuffer(raw, dtype=np.float32).reshape(-1, channels)
-    return data, sr
+         "-f", "f32le", "-acodec", "pcm_f32le", "-"],
+        capture_output=True, check=True).stdout
+    arr = np.frombuffer(raw, dtype="<f4").reshape(-1, ch).T.copy()
+    return arr, sr
 
 
-def _read_audio(path: Path) -> tuple[np.ndarray, int]:
-    try:
-        import soundfile as sf
-        data, sr = sf.read(str(path), dtype="float32", always_2d=True)
-        return data, int(sr)
-    except Exception:
-        if shutil.which("ffmpeg") is None:
-            raise RuntimeError(
-                f"Не удалось прочитать {path.name}: soundfile не справился, "
-                "а ffmpeg не найден в PATH. Установите: brew install ffmpeg"
-            ) from None
-        return _ffmpeg_decode(path)
+def load_clip(path: Path, highpass_hz: float = HIGHPASS_HZ) -> Clip:
+    """Загрузить файл, привести к моно 16 kHz, high-pass, нормализовать."""
+    arr, src_sr = _read_audio(path)
+    x = torch.from_numpy(np.ascontiguousarray(arr, dtype=np.float32))
 
+    if x.ndim == 1:
+        x = x.unsqueeze(0)
+    if x.size(0) > 1:
+        x = x.mean(dim=0, keepdim=True)          # миксдаун в моно
 
-def load_clip(path: Path) -> Clip:
-    """Загрузить файл и привести к mono / 16 kHz float32 (на CPU)."""
-    data, source_sr = _read_audio(path)
-    wav = torch.from_numpy(np.ascontiguousarray(data.T))  # (channels, N)
+    if src_sr != TARGET_SR:
+        x = AF.resample(x, src_sr, TARGET_SR,
+                        resampling_method="sinc_interp_kaiser", beta=14.76)
 
-    # моно-миксдаун
-    if wav.shape[0] > 1:
-        wav = wav.mean(dim=0, keepdim=True)
-    wav = wav.reshape(-1)
+    if highpass_hz > 0:
+        # Биквад-фильтр Баттерворта (Q=0.707) — мягкий срез без звона.
+        x = AF.highpass_biquad(x, TARGET_SR, cutoff_freq=float(highpass_hz), Q=0.707)
 
-    # ресемплинг до 16 kHz (Kaiser)
-    if source_sr != TARGET_SR:
-        wav = F.resample(wav, source_sr, TARGET_SR,
-                         resampling_method="sinc_interp_kaiser",
-                         lowpass_filter_width=64)
-
-    # highpass 30 Гц против сценического гула
-    wav = F.highpass_biquad(wav, TARGET_SR, 30.0)
-
-    # нормализация пика до -1 dBFS
-    peak = wav.abs().max()
+    peak = x.abs().max()
     if peak > 0:
-        target = 10 ** (_PEAK_DBFS / 20.0)
-        wav = wav * (target / peak)
+        x = x * (10 ** (-1.0 / 20.0) / peak)     # пик -> -1 dBFS
 
-    return Clip(path=path, samples=wav.numpy().astype(np.float32),
-                sr=TARGET_SR, source_sr=source_sr)
+    mono = x.squeeze(0).contiguous()
+    return Clip(path=path, samples=mono, sr=TARGET_SR, src_sr=src_sr,
+                duration=mono.numel() / TARGET_SR)
 
 
-def frame_rms(samples: np.ndarray, hop: int, win: int = 1024) -> np.ndarray:
-    """RMS-энергия по фреймам (для velocity). Лёгкая операция — на CPU."""
-    x = torch.from_numpy(samples)
-    frames = x.unfold(0, win, hop) if x.numel() >= win else x.view(1, -1)
-    rms = frames.pow(2).mean(dim=1).sqrt()
-    return rms.numpy()
+def frame_rms(samples: torch.Tensor, hop: int) -> np.ndarray:
+    """Скользящий RMS по окнам hop — основа для velocity."""
+    n = samples.numel()
+    if n == 0:
+        return np.zeros(0, dtype=np.float64)
+    pad = hop - (n % hop) if n % hop else 0
+    x = torch.nn.functional.pad(samples, (0, pad))
+    frames = x.reshape(-1, hop)
+    return frames.pow(2).mean(dim=1).sqrt().double().numpy()

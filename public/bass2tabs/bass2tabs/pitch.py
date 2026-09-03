@@ -1,23 +1,19 @@
-"""Питч-трекинг CREPE (пакет torchcrepe) — инференс на MPS.
+"""Питч-трекинг CREPE на MPS (torchcrepe).
 
-CREPE — монофонический детектор высоты: CNN поверх сырой волны выдаёт
-распределение по 360 центовым бинам (по 20 центов, опора 10 Гц).
-torchcrepe — канонический PyTorch-порт модели из PyPI, поэтому инференс
-честно уходит на MPS через параметр device.
+Устойчивость к «аллергичному» Metal-драйверу (macOS 26.3+ abort'ит крупные
+GPU-аллокации, IOGPUDeviceShmem):
+  * трек режется на чанки по 30 c с очисткой Metal-кэша между ними;
+  * батчи на MPS уменьшены (см. --batch);
+  * весь MPS-прогон идёт в ДОЧЕРНЕМ процессе: если драйвер его убивает
+    (SIGABRT нельзя перехватить в Python), родитель повторяет на CPU;
+  * результат вычитывается из очереди ДО join (иначе дедлок feeder-потока).
 
-Длинный трек прогоняется чанками по 30 секунд с очисткой Metal-кэша между
-ними и консервативными батчами на MPS — иначе Metal-драйвер macOS может
-упасть в «Failed to allocate IOGPUDeviceShmem» (SIGABRT, не ловится
-try/except). Сам инференс на MPS делегирован ДОЧЕРНЕМУ процессу: такой
-abort убивает только его, а родитель повторяет прогон на CPU.
-
-Установка: pip install "torchcrepe>=0.0.22"
-Пакет называется torchcrepe — одним словом. Имени torch-mel-crepe в PyPI
-не существует (отсюда ошибка pip "No matching distribution found").
+Медианный фильтр уверенности — чистый numpy, без scipy.
 """
 
 from __future__ import annotations
 
+import multiprocessing as mp
 import sys
 import time
 
@@ -26,190 +22,133 @@ import torch
 
 try:
     import torchcrepe
-except ImportError as exc:  # pragma: no cover
-    # ImportError здесь означает не обязательно «пакет не установлен»: так же
-    # падает транзитивная зависимость при импорте torchcrepe (на macOS 26.3+
-    # — почти наверняка scipy<=1.16 внутри librosa/torchcrepe,
-    # «dlopen ... _spropack.so ... __thread_bss», см. scipy/scipy#25635).
-    raise SystemExit(
-        "Не удалось импортировать torchcrepe.\n"
-        f"  причина: {exc}\n"
-        "  если pip show torchcrepe находит пакет — проблема глубже: упала "
-        "транзитивная зависимость (на macOS 26.3+ — почти наверняка "
-        "scipy<=1.16, см. scipy/scipy#25635).\n"
-        "  лечение: venv на Python 3.11+ (brew install python@3.12; "
-        "python3.12 -m venv .venv; source .venv/bin/activate; "
-        "pip install -r requirements.txt; pip install -e .)"
+except Exception as exc:  # pragma: no cover
+    raise RuntimeError(
+        f"Не найден torchcrepe (причина: {exc}). "
+        'Выполните: pip install "torchcrepe>=0.0.22"'
     ) from exc
 
-# Рабочий диапазон 4-струнного баса с запасом на слэп-обертоны.
-BASS_FMIN_HZ = 41.2    # E1 — открытая четвёртая струна
-BASS_FMAX_HZ = 392.0   # G4 — верх типичного басового диапазона
+CHUNK_SECONDS = 30.0     # длина чанка инференса
+FMIN, FMAX = 32.0, 500.0  # Гц (фильтр по MIDI-диапазону — в notes.py)
 
-# CREPE измеряет высоту в центах относительно 10 Гц: cents = 1200*log2(f/10)
-_CENTS_REF_HZ = 10.0
 
-# Чанки по 30 с: пиковые GPU-аллокации падают, Metal-кэш чистится между ними.
-_CHUNK_SECONDS = 30.0
-# Консервативный батч на MPS: меньше живых аллокаций — выше шанс, что
-# драйвер Metal не abort'ит процесс (подстраховка — авто-откат на CPU).
-_MPS_BATCH = 64
+def _medfilt1d(x: np.ndarray, k: int = 5) -> np.ndarray:
+    """Одномерный медианный фильтр, семантика scipy medfilt(k): нулевой
+    паддинг, нечётное окно. Чистый numpy, без scipy."""
+    if x.size < 3 or k < 3:
+        return x.copy()
+    pad = k // 2
+    padded = np.pad(x, pad, mode="constant", constant_values=0)
+    windows = np.lib.stride_tricks.sliding_window_view(padded, k)
+    return np.median(windows, axis=1)
 
 
 def progress_bar(done: int, total: int, label: str = "", width: int = 24) -> None:
-    """Однострочный прогресс-бар (перезаписывает строку через \\r).
-
-    Видим и из дочернего процесса: spawn наследует stdio родителя.
-    """
-    frac = done / total if total else 1.0
-    filled = int(round(width * frac))
+    """Однострочный прогресс-бар, видимый и из дочернего процесса (stdio)."""
+    frac = done / max(1, total)
+    filled = int(round(frac * width))
     bar = "█" * filled + "░" * (width - filled)
-    sys.stdout.write(f"\r  {label} [{bar}] {int(frac * 100):3d}%")
+    sys.stdout.write(f"\r  {label} [{bar}] {frac * 100:3.0f}%")
     sys.stdout.flush()
     if done >= total:
         sys.stdout.write("\n")
         sys.stdout.flush()
 
 
-def _medfilt1d(x: np.ndarray, kernel_size: int = 5) -> np.ndarray:
-    """Бегущая медиана по нечётному окну, края дополняются нулями.
+def _crepe_pass(audio, sr, hop, model, device, batch) -> tuple[np.ndarray, np.ndarray]:
+    """Прогон CREPE по чанкам на заданном устройстве."""
+    n = audio.numel()
+    chunk = int(CHUNK_SECONDS * sr)
+    n_chunks = max(1, -(-n // chunk))
+    all_pitch, all_conf = [], []
 
-    Поведение один в один со scipy.signal.medfilt, но на чистом numpy:
-    scipy убрана из пайплайна (на macOS 26.3+ её Fortran-расширения падают
-    при импорте, см. scipy/scipy#25635).
-    """
-    x = np.asarray(x, dtype=np.float64).reshape(-1)
-    if x.size == 0:
-        return x
-    k = int(kernel_size) | 1  # гарантируем нечётное окно
-    pad = np.zeros(k // 2, dtype=x.dtype)
-    windows = np.lib.stride_tricks.sliding_window_view(
-        np.concatenate([pad, x, pad]), k)
-    return np.median(windows, axis=1)
-
-
-def _predict(audio, sr, hop, model, device, batch):
-    """Один прогон CREPE на указанном устройстве."""
-    with torch.inference_mode():
-        pitch, confidence = torchcrepe.predict(
-            audio, sr, hop,
-            fmin=BASS_FMIN_HZ,
-            fmax=BASS_FMAX_HZ,
-            model=model,                          # "full" или "tiny"
-            decoder=torchcrepe.decode.viterbi,    # сглаживание по бинам
-            batch_size=batch,
-            device=device,
-            return_periodicity=True,
-        )
-    return pitch, confidence
-
-
-def _crepe_pass(samples, sr, device, hop, model, batch):
-    """Прогон CREPE по всему треку чанками на заданном устройстве."""
-    audio = torch.as_tensor(samples, dtype=torch.float32).reshape(1, -1)
-    step = max(hop, int(_CHUNK_SECONDS * sr) // hop * hop)  # кратен hop
-    total = audio.shape[1]
-    n_chunks = max(1, -(-total // step))
-
-    pitches, confidences = [], []
-    for idx, start in enumerate(range(0, total, step), start=1):
-        part = audio[:, start:start + step]
-        pitch, conf = _predict(part, sr, hop, model, device, batch)
-        pitches.append(pitch.detach().float().cpu().numpy().reshape(-1))
-        confidences.append(conf.detach().float().cpu().numpy().reshape(-1))
-        if device.type == "mps" and hasattr(torch.mps, "empty_cache"):
+    for ci in range(n_chunks):
+        seg = audio[ci * chunk:(ci + 1) * chunk]
+        t0 = time.perf_counter()
+        pitch, conf = torchcrepe.predict(
+            seg.unsqueeze(0), sr, hop_length=hop, fmin=FMIN, fmax=FMAX,
+            model=model, return_periodicity=True, device=device,
+            batch_size=batch, pad=True, decoder=torchcrepe.decode.viterbi)
+        all_pitch.append(pitch.squeeze(0).double().cpu().numpy())
+        all_conf.append(conf.squeeze(0).double().cpu().numpy())
+        if device.type != "mps":
+            elapsed = time.perf_counter() - t0
+            progress_bar(ci + 1, n_chunks,
+                         f"CREPE {model} · чанк {ci + 1}/{n_chunks} · {elapsed:.0f} c")
+        if device.type == "mps" and ci + 1 < n_chunks:
             torch.mps.empty_cache()
-        progress_bar(idx, n_chunks, f"CREPE {model} · чанк {idx}/{n_chunks}")
+        if device.type == "mps":
+            progress_bar(ci + 1, n_chunks,
+                         f"CREPE {model} · чанк {ci + 1}/{n_chunks}")
 
-    return (np.concatenate(pitches).astype(np.float64),
-            np.concatenate(confidences).astype(np.float64))
+    return np.concatenate(all_pitch), np.concatenate(all_conf)
 
 
-def _mps_worker(samples, sr, hop, model, batch, queue):
-    """Цель дочернего процесса: CREPE на MPS, результат — в очередь (float32)."""
+def _mps_worker(q, audio, sr, hop, model, batch):
+    """Рабочий MPS-процесс: кладёт (pitch, confidence) в очередь float32."""
     try:
-        pitch, conf = _crepe_pass(samples, sr, torch.device("mps"),
-                                  hop, model, batch)
-        queue.put(("ok", pitch.astype(np.float32), conf.astype(np.float32)))
-    except Exception as exc:  # noqa: BLE001 — родителю уйдёт статус "err"
-        queue.put(("err", repr(exc)))
+        pitch, conf = _crepe_pass(audio, sr, hop, model,
+                                  torch.device("mps"), batch)
+        q.put((pitch.astype(np.float32), conf.astype(np.float32)))
+    except BaseException as exc:  # pragma: no cover
+        q.put(("error", repr(exc)))
 
 
-def _run_mps_guarded(samples, sr, hop, model, batch):
+def _run_mps_guarded(audio, sr, hop, model, batch):
     """MPS-инференс в дочернем процессе с авто-откатом на CPU.
 
-    Metal-драйвер при нехватке общей памяти падает в SIGABRT
-    («Failed to allocate IOGPUDeviceShmem») — такой abort нельзя перехватить
-    try/except, он убивает процесс целиком. Поэтому тяжёлый прогон
-    делегируется дочернему процессу; если тот гибнет (или вернул ошибку),
-    родитель повторяет на CPU. Точки входа защищены guard'ом
-    if __name__ == "__main__", так что spawn безопасен.
-
-    ВАЖНО (анти-дедлок): результат вычитывается из очереди ДО join. Полезная
-    нагрузка больше буфера pipe (~64 КБ), feeder-поток ребёнка блокируется на
-    записи, и join до чтения повис бы навсегда (см. документацию Python:
-    «все элементы очереди должны быть забраны до join'а»).
+    Результат вычитывается из очереди ДО join — иначе дедлок: большой
+    массив не помещается в буфер pipe, feeder-поток ребёнка блокируется,
+    а join ждёт завершения ребёнка (правило из документации Python).
     """
-    import multiprocessing as mp
-
     ctx = mp.get_context("spawn")
-    queue = ctx.Queue()
-    proc = ctx.Process(target=_mps_worker,
-                       args=(samples, sr, hop, model, batch, queue))
+    q = ctx.Queue()
+    proc = ctx.Process(target=_mps_worker, args=(q, audio, sr, hop, model, batch))
     proc.start()
 
-    result = None
-    deadline = time.monotonic() + 1800  # страховочные 30 минут
-    while True:
+    result, deadline = None, time.time() + 1800
+    while result is None:
         try:
-            status, *payload = queue.get(timeout=1.0)
-            result = (status, payload)
-            break
-        except Exception:  # queue.Empty — продолжаем ждать
-            if not proc.is_alive() and queue.empty():
+            result = q.get(timeout=1.0)
+        except Exception:
+            if not proc.is_alive() and q.empty():
                 break
-            if time.monotonic() > deadline:
+            if time.time() > deadline:
+                proc.kill()
                 break
-
     proc.join(timeout=10)
     if proc.is_alive():
-        proc.terminate()
+        proc.kill()
 
-    if result is not None and result[0] == "ok":
-        pitch, conf = result[1]
-        return pitch.astype(np.float64), conf.astype(np.float64)
+    if isinstance(result, tuple) and len(result) == 2 \
+            and isinstance(result[0], np.ndarray):
+        return result[0].astype(np.float64), result[1].astype(np.float64)
 
-    sys.stdout.write("\n")  # дочерний бар мог остаться без перевода строки
-    if result is not None and result[0] == "err":
-        print(f"  ! CREPE на MPS вернул ошибку ({result[1][0]}), повторяю на CPU")
-    else:
-        print(f"  ! MPS-процесс погиб (exitcode {proc.exitcode}) — похоже на "
-              "abort Metal-драйвера, повторяю на CPU")
-    return _crepe_pass(samples, sr, torch.device("cpu"), hop, model, batch)
+    print("\n  ! MPS-процесс погиб (вероятно, abort Metal-драйвера) — повторяю на CPU",
+          flush=True)
+    return _crepe_pass(audio, sr, hop, model, torch.device("cpu"), batch * 2)
 
 
-def estimate_pitch(samples, sr, device, hop_ms=8.0, model="full", batch=None):
-    """Прогнать CREPE и вернуть (f0 в Гц, периодичность 0..1, hop в сэмплах)."""
-    hop = max(16, int(sr * hop_ms / 1000))
-    # batch=None -> авто: 64 на MPS / 2048 на CPU. При склонности драйвера к
-    # abort'ам уменьшайте вручную (флаг --batch: 32, 16, ...).
-    if batch is None:
-        batch = _MPS_BATCH if device.type == "mps" else 2048
-    batch = max(16, int(batch))
+def estimate_pitch(samples, sr, device, model="full", hop_ms=8.0, batch=0):
+    """Вернуть (cents, confidence, hop).
+
+    cents — относительно опоры 10 Гц (midi = cents/100 + 3.4868).
+    """
+    hop = max(1, int(round(sr * hop_ms / 1000.0)))
+    hop -= hop % 160                      # сетка CREPE кратна 160 на 16 kHz
+    if batch <= 0:
+        batch = 64 if device.type == "mps" else 2048
 
     if device.type == "mps":
-        pitch, confidence = _run_mps_guarded(samples, sr, hop, model, batch)
+        pitch_hz, confidence = _run_mps_guarded(samples, sr, hop, model, batch)
     else:
-        pitch, confidence = _crepe_pass(samples, sr, device, hop, model, batch)
+        pitch_hz, confidence = _crepe_pass(samples, sr, hop, model, device, batch)
 
-    # Медианный фильтр (чистый numpy) добивает одиночные октавные скачки.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cents = 100.0 * np.log2(np.maximum(pitch_hz, 1e-6) / 10.0)
+    cents[~np.isfinite(cents)] = np.nan
+
+    # Медианный фильтр (чистый numpy) добивает одиночные октавные скачки
+    # декодера — без scipy, чтобы не зависеть от её бинарных расширений.
     confidence = _medfilt1d(confidence, 5)
-    return pitch, confidence, hop
-
-
-def hz_to_cents(pitch_hz: np.ndarray) -> np.ndarray:
-    """f0 (Гц) -> центы относительно 10 Гц; неозвученные фреймы = NaN."""
-    cents = np.full_like(pitch_hz, np.nan, dtype=np.float64)
-    voiced = pitch_hz > 0
-    cents[voiced] = 1200.0 * np.log2(pitch_hz[voiced] / _CENTS_REF_HZ)
-    return cents
+    return cents, confidence, hop

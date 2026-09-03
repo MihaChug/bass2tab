@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 
-export function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
+export function usePrefersReducedMotion() {
+  const [reduced, setReduced] = useState(
+    () => typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setReduced(mq.matches);
     const on = () => setReduced(mq.matches);
     mq.addEventListener("change", on);
     return () => mq.removeEventListener("change", on);
@@ -19,14 +21,14 @@ export function useReveal<T extends HTMLElement>() {
     if (!el) return;
     const io = new IntersectionObserver(
       (entries) => {
-        entries.forEach((e) => {
+        for (const e of entries) {
           if (e.isIntersecting) {
             e.target.classList.add("in");
             io.unobserve(e.target);
           }
-        });
+        }
       },
-      { threshold: 0.12, rootMargin: "0px 0px -8% 0px" }
+      { threshold: 0.12 }
     );
     io.observe(el);
     return () => io.disconnect();
@@ -34,35 +36,39 @@ export function useReveal<T extends HTMLElement>() {
   return ref;
 }
 
-const GLYPHS = "▓▒░<>/\\|=+*#e1a2d4";
+const SCRAMBLE = "█▓▒░<>/\\|=+*#";
 
-export function useScramble(text: string) {
-  const [out, setOut] = useState(text);
+export function useScramble(target: string, delay = 200) {
+  const reduced = usePrefersReducedMotion();
+  const [out, setOut] = useState(reduced ? target : "");
   useEffect(() => {
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (reduced) {
-      setOut(text);
+      setOut(target);
       return;
     }
     let frame = 0;
-    const total = 24;
-    const id = window.setInterval(() => {
+    let raf = 0;
+    const total = target.length * 3 + 8;
+    const tick = () => {
       frame += 1;
-      const settled = Math.floor((frame / total) * text.length);
-      setOut(
-        text
-          .split("")
-          .map((ch, i) =>
-            i < settled ? ch : GLYPHS[Math.floor(Math.random() * GLYPHS.length)]
-          )
-          .join("")
-      );
-      if (frame >= total) {
-        setOut(text);
-        window.clearInterval(id);
+      const settled = Math.floor((frame / total) * target.length);
+      let s = "";
+      for (let i = 0; i < target.length; i += 1) {
+        if (i < settled) s += target[i];
+        else if (target[i] === " ") s += " ";
+        else s += SCRAMBLE[Math.floor(Math.random() * SCRAMBLE.length)];
       }
-    }, 42);
-    return () => window.clearInterval(id);
-  }, [text]);
+      setOut(s);
+      if (settled < target.length) raf = requestAnimationFrame(tick);
+      else setOut(target);
+    };
+    const t = window.setTimeout(() => {
+      raf = requestAnimationFrame(tick);
+    }, delay);
+    return () => {
+      window.clearTimeout(t);
+      cancelAnimationFrame(raf);
+    };
+  }, [target, delay, reduced]);
   return out;
 }

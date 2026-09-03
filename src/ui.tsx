@@ -145,10 +145,10 @@ export function Command({ cmd, note }: { cmd: string; note?: string }) {
 /* ---------- nav ---------- */
 export const NAV_LINKS = [
   { href: "#pipeline", label: "Пайплайн" },
+  { href: "#hysteresis", label: "Алгоритм" },
   { href: "#formats", label: "Форматы" },
   { href: "#code", label: "Исходники" },
   { href: "#install", label: "Установка" },
-  { href: "#faq", label: "FAQ" },
 ];
 
 export function Nav() {
@@ -200,11 +200,12 @@ export function Footer() {
             </div>
             <p className="mt-4 text-[13px] leading-relaxed text-faint">
               Локальная транскрибация бас-гитары: аудио → MIDI, MusicXML, GP5.
-              Инференс — на GPU Apple Silicon через MPS. Без облаков, без аккаунтов.
+              Инференс — на GPU Apple Silicon через MPS. Гистерезисная
+              сегментация нот (0.6/0.35) и high-pass 32 Гц перед CREPE.
               Исходники — настоящие .py-файлы, скачиваются напрямую.
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
-              {["MIT", "Python 3.10+", "torch · MPS", "macOS 12.3+"].map((t) => (
+              {["MIT", "Python 3.11+", "torch · MPS", "macOS 12.3+"].map((t) => (
                 <span key={t} className="rounded border border-line px-2 py-1 font-mono text-[10px] text-dim">
                   {t}
                 </span>

@@ -1,6 +1,13 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { usePrefersReducedMotion, useScramble } from "./hooks";
-import { Command, CopyButton, Footer, Nav, Reveal, SectionHeading } from "./ui";
+import {
+  Command,
+  CopyButton,
+  Footer,
+  Nav,
+  Reveal,
+  SectionHeading,
+} from "./ui";
 import { CodeBrowser } from "./components/CodeBrowser";
 
 /* ================= terminal ================= */
@@ -8,13 +15,15 @@ import { CodeBrowser } from "./components/CodeBrowser";
 type TermLine = { text: string; cls: string; pause?: number };
 
 const LINES: TermLine[] = [
-  { text: "$ bass2tabs take.wav --formats midi,musicxml,gp5", cls: "text-paper", pause: 500 },
+  { text: "$ bass2tabs take.wav --on-thr 0.6 --off-thr 0.35 --highpass 32", cls: "text-paper", pause: 500 },
   { text: "torch 2.13.0 · python 3.12 · macOS 27.0 · arm64", cls: "text-faint", pause: 140 },
-  { text: "устройство: mps · выделено 0.0 MiB на старте", cls: "text-faint", pause: 260 },
-  { text: "· загружено take.wav: 3:47 · 44100 Hz -> 16 kHz mono", cls: "text-dim", pause: 300 },
-  { text: "· питч-трекинг (CREPE full на mps)…", cls: "text-dim", pause: 200 },
-  { text: "  CREPE full · чанк 7/7 [██████████████] 100% · 6.3 c", cls: "text-phos", pause: 300 },
-  { text: "· сегментация: 196 нот · темп 118 BPM · сетка 1/16", cls: "text-dim", pause: 300 },
+  { text: "устройство: mps", cls: "text-faint", pause: 220 },
+  { text: "· загружено take.wav: 4:02 · 44100 Hz -> 16 kHz mono · high-pass 32 Гц", cls: "text-dim", pause: 280 },
+  { text: "· питч-трекинг (CREPE full на mps)…", cls: "text-amber", pause: 200 },
+  { text: "  CREPE full · чанк 9/9 [████████████████████████] 100%", cls: "text-phos", pause: 420 },
+  { text: "· CREPE-full (mps): 28 240 фреймов · 9 чанков · 21.4 c", cls: "text-phos", pause: 280 },
+  { text: "· онсеты, темп и сегментация (гистерезис 0.6/0.35)…", cls: "text-amber", pause: 260 },
+  { text: "· сегментация: 196 нот · темп 118 BPM · сетка 1/16", cls: "text-dim", pause: 320 },
   { text: "· экспорт (midi, musicxml, gp5)…", cls: "text-dim", pause: 200 },
   { text: "  ok out/take.mid        (4.2 KB)", cls: "text-phos", pause: 130 },
   { text: "  ok out/take.musicxml   (17.9 KB)", cls: "text-phos", pause: 130 },
@@ -34,7 +43,7 @@ function Terminal({ reduced }: { reduced: boolean }) {
         setCh(0);
       }, 3800);
     } else if (ch < LINES[li].text.length) {
-      t = window.setTimeout(() => setCh((c) => c + 2), 13);
+      t = window.setTimeout(() => setCh((c) => c + 2), 12);
     } else {
       t = window.setTimeout(() => {
         setLi((l) => l + 1);
@@ -75,52 +84,35 @@ function Terminal({ reduced }: { reduced: boolean }) {
   );
 }
 
-/* ================= equalizer card ================= */
+/* ================= equalizer ================= */
 
-function EqualizerCard({ reduced }: { reduced: boolean }) {
-  const bars = [
-    0.4, 0.7, 0.5, 0.9, 0.6, 1, 0.75, 0.5, 0.85, 0.6, 0.4, 0.7, 0.95, 0.55, 0.8, 0.45,
-    0.65, 0.9, 0.5, 0.75, 0.35, 0.6, 0.85, 0.5, 0.7, 0.4, 0.9, 0.55, 0.65, 0.45, 0.8, 0.6,
-  ];
+const EQ = [26, 44, 62, 84, 58, 96, 70, 40, 88, 52, 74, 34, 60, 46, 80, 30, 56, 42];
+
+function Equalizer() {
   return (
-    <div className="relative overflow-hidden rounded-xl border border-line bg-ink-2/95">
-      <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
-        <span className="font-mono text-[11px] text-dim">f0-контур · CREPE-full · 8 ms</span>
-        <span className="font-mono text-[11px] text-faint">E1 – G4</span>
-      </div>
-      <div className="relative flex h-36 items-end gap-[3px] px-3 pb-3 pt-6">
-        {bars.map((h, i) => (
-          <div
-            key={i}
-            className="eq-bar flex-1 rounded-t-sm"
-            style={{
-              height: `${h * 100}%`,
-              animationDelay: `${(i % 8) * 0.09}s`,
-              animationDuration: `${0.9 + (i % 5) * 0.12}s`,
-              background:
-                h > 0.8
-                  ? "linear-gradient(to top, rgba(217,127,30,0.9), rgba(242,163,60,0.9))"
-                  : h > 0.55
-                    ? "linear-gradient(to top, rgba(31,143,112,0.8), rgba(67,201,162,0.8))"
-                    : "linear-gradient(to top, rgba(61,50,36,0.9), rgba(141,124,99,0.7))",
-            }}
-          />
-        ))}
-        {!reduced && (
-          <div
-            className="scan-line pointer-events-none absolute inset-y-2 w-px bg-amber/80"
-            style={{ boxShadow: "0 0 12px rgba(242,163,60,0.8)" }}
-            aria-hidden="true"
-          />
-        )}
-      </div>
+    <div className="flex h-24 items-end gap-1.5" aria-hidden="true">
+      {EQ.map((h, i) => (
+        <span
+          key={i}
+          className="eq-bar w-[7px] rounded-t-[3px]"
+          style={{
+            height: `${h}%`,
+            background:
+              i % 4 === 0
+                ? "linear-gradient(180deg, #f2a33c, #d97f1e)"
+                : "linear-gradient(180deg, rgba(67,201,162,0.9), rgba(67,201,162,0.35))",
+            animationDelay: `${(i % 6) * 0.13}s`,
+            animationDuration: `${0.9 + (i % 5) * 0.14}s`,
+          }}
+        />
+      ))}
     </div>
   );
 }
 
 /* ================= hero ================= */
 
-const BADGES = ["torch ≥ 2.1", "MPS", "CREPE-full", "MIDI", "MusicXML", "GP5"];
+const BADGES = ["torch ≥ 2.1", "MPS", "CREPE-full", "гистерезис 0.6/0.35", "HP 32 Гц", "MIDI", "MusicXML", "GP5"];
 
 function Hero() {
   const reduced = usePrefersReducedMotion();
@@ -143,9 +135,9 @@ function Hero() {
               </div>
             </Reveal>
 
-            <h1 className="mt-7 font-display text-[44px] font-black leading-[0.98] tracking-tight text-paper sm:text-[64px] lg:text-[72px]">
+            <h1 className="mt-7 font-display text-[42px] font-black leading-[0.98] tracking-tight text-paper sm:text-[60px] lg:text-[68px]">
               <span className="whitespace-pre">{title}</span>
-              <span className="mt-2 block text-[22px] font-medium leading-snug text-dim sm:text-[26px]">
+              <span className="mt-2 block text-[20px] font-medium leading-snug text-dim sm:text-[24px]">
                 партия баса из аудио —<br />в <span className="text-amber">MIDI</span>,{" "}
                 <span className="text-amber">MusicXML</span> и <span className="text-amber">GP5</span>
               </span>
@@ -154,10 +146,11 @@ function Hero() {
             <Reveal delay={120}>
               <p className="mt-6 max-w-xl text-[15.5px] leading-relaxed text-dim">
                 Python-приложение для транскрибации записи бас-гитары
-                (wav&nbsp;/&nbsp;flac&nbsp;/&nbsp;mp3). Питч-трекинг CREPE исполняется на GPU через{" "}
-                <span className="font-mono text-[14px] text-phos">MPS</span>, онсеты и темп считает
-                librosa, экспорт — в три нотных формата сразу. Исходники — настоящие .py-файлы в
-                репозитории, без JS-рендера.
+                (wav&nbsp;/&nbsp;flac&nbsp;/&nbsp;mp3). CREPE исполняется на GPU через{" "}
+                <span className="font-mono text-[14px] text-phos">MPS</span>. Ноты выделяются
+                двухпороговой гистерезисной системой — <span className="text-amber">0.6</span> на
+                включение, <span className="text-amber">0.35</span> на сброс, — а перед CREPE сигнал
+                проходит high-pass 32&nbsp;Гц. Разделение микса не требуется.
               </p>
             </Reveal>
 
@@ -190,34 +183,19 @@ function Hero() {
                   className="inline-flex items-center gap-2.5 rounded-lg border border-line bg-panel px-6 py-3.5 font-display text-[13px] font-bold text-paper transition-colors duration-200 hover:border-phos/50 hover:text-phos"
                 >
                   Быстрый старт
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
                 </a>
               </div>
             </Reveal>
 
-            <Reveal delay={360}>
-              <dl className="mt-10 grid max-w-md grid-cols-3 divide-x divide-line border-y border-line">
-                {[
-                  { v: "3", l: "формата на выходе" },
-                  { v: "14", l: "файлов в пакете" },
-                  { v: "≈700", l: "строк Python" },
-                ].map((s) => (
-                  <div key={s.l} className="flex flex-col px-4 py-4 first:pl-0">
-                    <dd className="font-display text-[26px] font-bold leading-none text-paper">{s.v}</dd>
-                    <dt className="mt-1 font-mono text-[10.5px] leading-tight text-faint">{s.l}</dt>
-                  </div>
-                ))}
-              </dl>
+            <Reveal delay={340}>
+              <div className="mt-9">
+                <Equalizer />
+              </div>
             </Reveal>
           </div>
 
           <Reveal delay={150} className="lg:pt-2">
             <Terminal reduced={reduced} />
-            <div className="mt-4">
-              <EqualizerCard reduced={reduced} />
-            </div>
           </Reveal>
         </div>
       </div>
@@ -229,14 +207,13 @@ function Hero() {
 
 const ITEMS = [
   "wav → midi", "flac → musicxml", "mp3 → gp5", "torch · mps", "crepe-full · viterbi",
-  "диапазон E1–G4", "сетка 1/16", "строй E–A–D–G", "onset backtrack", "480 tpq",
-  "velocity из rms", "авто-темп",
+  "on 0.60 / off 0.35", "high-pass 32 Гц", "диапазон E1–G4", "сетка 1/16", "строй E–A–D–G",
 ];
 
 function Marquee() {
   const row = [...ITEMS, ...ITEMS];
   return (
-    <div className="relative mt-20 overflow-hidden border-y border-line bg-ink-2/70 py-3.5" aria-hidden="true">
+    <div className="relative mt-16 overflow-hidden border-y border-line bg-ink-2/70 py-3.5" aria-hidden="true">
       <div className="marquee-track flex w-max items-center whitespace-nowrap">
         {row.map((it, i) => (
           <span key={i} className="flex items-center font-mono text-[11.5px] font-medium uppercase tracking-[0.2em]">
@@ -244,7 +221,7 @@ function Marquee() {
               {it}
             </span>
             <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true">
-              <rect x="2" y="2" width="6" height="6" transform="rotate(45 5 5)" fill="none" stroke="#8d7c63" strokeWidth="1.2" />
+              <rect x="2" y="2" width="6" height="6" transform="rotate(45 5 5)" fill="none" stroke="#5d6d75" strokeWidth="1.2" />
             </svg>
           </span>
         ))}
@@ -283,12 +260,11 @@ const ICONS = {
       <path d="M10.5 14h1.6l1-2.4 1.6 4.4 1-2h1.8" stroke="#f2a33c" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </>
   ),
-  segment: icon(
+  gate: icon(
     <>
-      <path d="M3 20h5M11 20h6M20 20h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-      <circle cx="8" cy="12" r="2.2" stroke="#43c9a2" strokeWidth="1.6" />
-      <circle cx="14" cy="7" r="2.2" stroke="#f2a33c" strokeWidth="1.6" />
-      <circle cx="20" cy="11" r="2.2" stroke="#43c9a2" strokeWidth="1.6" />
+      <path d="M3 20h4l3-9 4 9 3-6 2 3h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="3" y1="8" x2="25" y2="8" stroke="#f2a33c" strokeWidth="1.4" strokeDasharray="3 3" />
+      <line x1="3" y1="15" x2="25" y2="15" stroke="#43c9a2" strokeWidth="1.4" strokeDasharray="3 3" />
     </>
   ),
   metro: icon(
@@ -308,28 +284,26 @@ const ICONS = {
   ),
 };
 
-type Stage = { num: string; title: string; engine: string; desc: string; tags: string[]; icon: ReactNode };
-
-const STAGES: Stage[] = [
+const STAGES = [
   {
     num: "01", title: "Декодирование", engine: "soundfile · ffmpeg",
-    desc: "wav и flac читает soundfile (libsndfile), mp3 — он же на libsndfile 1.1+ либо ffmpeg CLI. Без torchaudio.load и torchcodec. Сигнал сразу превращается в тензор.",
+    desc: "wav и flac читает soundfile (libsndfile), mp3 — он же на libsndfile 1.1+ либо ffmpeg CLI. Без torchaudio.load — значит без torchcodec. Сигнал уходит в float-тензор.",
     tags: ["wav / flac / mp3", "fallback: ffmpeg"], icon: ICONS.wave,
   },
   {
-    num: "02", title: "Предобработка на CPU", engine: "torchaudio.functional",
-    desc: "Миксдаун в моно, ресемплинг до 16 kHz (Kaiser), biquad-highpass 30 Гц против сценического гула, нормализация пика до −1 dBFS. Всё на CPU — первое GPU-выделение будет уже в CREPE.",
-    tags: ["16 kHz", "highpass 30 Hz", "−1 dBFS"], icon: ICONS.filter,
+    num: "02", title: "Предобработка + High-Pass", engine: "torchaudio.functional · CPU",
+    desc: "Миксдаун в моно, ресемплинг до 16 kHz (Kaiser β≈14.8), затем HIGH-PASS 32 Гц (Баттерворт, Q=0.707): убирает сценический гул и постоянную составляющую, поднимая уверенность CREPE в полезных фреймах. Пик нормализуется до −1 dBFS.",
+    tags: ["16 kHz", "HP 30–35 Гц", "−1 dBFS"], icon: ICONS.filter,
   },
   {
     num: "03", title: "Питч-трекинг CREPE", engine: "torchcrepe · MPS",
-    desc: "CNN full (~24.4M параметров) поверх сырой волны, декодер Витерби собирает гладкий контур f0, hop 8 мс. Трек идёт чанками по 30 с в дочернем процессе: abort Metal-драйвера убивает только его, прогон повторяется на CPU.",
-    tags: ["model=full", "viterbi", "чанки 30 c", "subprocess"], icon: ICONS.chip,
+    desc: "CNN full (~24.4M параметров) поверх мел-спектра, декодер Витерби собирает гладкий контур f0, hop 8 мс. Чанки по 30 c с очисткой Metal-кэша; инференс — в subprocess с авто-откатом на CPU.",
+    tags: ["model=full", "viterbi", "чанки 30 c"], icon: ICONS.chip,
   },
   {
-    num: "04", title: "Онсеты и сегментация", engine: "librosa",
-    desc: "onset_detect с backtracking находит атаки, контур режется на сегменты. Медиана центов сегмента округляется до полутона: midi = cents/100 + 3.4868. Фильтр диапазона E1–G4.",
-    tags: ["backtrack", "медиана центов", "E1–G4"], icon: ICONS.segment,
+    num: "04", title: "Гистерезис + онсеты", engine: "триггер Шмитта · librosa",
+    desc: "Двухпороговая сегментация: нота ВКЛ при уверенности ≥ 0.60 (не ловим касания струн), ВЫКЛ при < 0.35 (затухающий хвост держится до последнего). Звучащие сегменты режутся онсетами, высота — медиана центов.",
+    tags: ["on 0.60", "off 0.35", "медиана центов"], icon: ICONS.gate,
   },
   {
     num: "05", title: "Ритм и динамика", engine: "beat_track + RMS",
@@ -350,7 +324,7 @@ function Pipeline() {
         <SectionHeading
           kicker="01 · Пайплайн"
           title="Шесть стадий от волны до табулатуры"
-          lead="Каждая стадия — отдельный модуль пакета. Тяжёлые вычисления (ресемплинг, фильтрация, RMS) — на CPU; инференс CREPE — на Apple Silicon через MPS, с защитой от драйверных abort'ов."
+          lead="Тяжёлые вычисления (ресемплинг, high-pass, инференс CREPE, RMS) идут на Apple Silicon через MPS; librosa добирает онсеты и темп на CPU. Каждая стадия — отдельный модуль пакета."
         />
         <div className="relative mt-14">
           <svg className="absolute -left-8 bottom-10 top-2 hidden h-[calc(100%-3rem)] w-6 lg:block" aria-hidden="true">
@@ -392,96 +366,193 @@ function Pipeline() {
   );
 }
 
-/* ================= formats ================= */
+/* ================= hysteresis ================= */
 
-function GpViz() {
+function HysteresisChart() {
+  // Кривая уверенности: атака -> плато -> затухание; вторая атака ниже 0.6.
+  // Нота держится, пока кривая выше 0.35 (нижний порог).
   return (
-    <pre className="font-mono text-[11px] leading-[1.5] text-dim" aria-hidden="true">
-{`G|-----------------|
-D|-------5---7-----|
-A|---3-----------5-|
-E|0---------------|`}
-    </pre>
+    <svg viewBox="0 0 640 220" className="w-full" aria-label="Диаграмма двухпороговой гистерезисной сегментации">
+      {/* зоны порогов */}
+      <rect x="0" y="20" width="640" height="58" fill="rgba(242,163,60,0.05)" />
+      <rect x="0" y="78" width="640" height="66" fill="rgba(141,124,99,0.06)" />
+      <rect x="0" y="144" width="640" height="76" fill="rgba(67,201,162,0.05)" />
+
+      {/* линии порогов */}
+      <line x1="0" x2="640" y1="78" y2="78" stroke="#f2a33c" strokeWidth="1.6" strokeDasharray="6 5" />
+      <line x1="0" x2="640" y1="144" y2="144" stroke="#43c9a2" strokeWidth="1.6" strokeDasharray="6 5" />
+      <text x="8" y="70" fill="#f2a33c" fontSize="11" fontFamily="JetBrains Mono, monospace">on 0.60 — активация ноты</text>
+      <text x="8" y="160" fill="#43c9a2" fontSize="11" fontFamily="JetBrains Mono, monospace">off 0.35 — сброс ноты</text>
+
+      {/* подсветка удерживаемой ноты */}
+      <rect x="96" y="20" width="316" height="200" fill="rgba(242,163,60,0.08)" stroke="rgba(242,163,60,0.35)" strokeWidth="1" />
+      <text x="106" y="36" fill="#f4ecdd" fontSize="11" fontFamily="JetBrains Mono, monospace" opacity="0.8">нота удерживается (0.35 ≤ conf)</text>
+
+      {/* ось */}
+      <line x1="0" x2="640" y1="200" y2="200" stroke="#3b2f21" strokeWidth="1" />
+
+      {/* кривая уверенности */}
+      <path
+        className="trace-draw"
+        d="M8 190 L80 186 L96 40 L120 30 L150 44 L190 36 L230 52 L270 74 L310 92 L350 110 L390 132 L412 152 L430 176 L470 184 L520 120 L540 100 L570 130 L600 170 L632 186"
+        fill="none"
+        stroke="#f4ecdd"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+
+      {/* маркеры вкл/выкл */}
+      <circle cx="96" cy="40" r="5" fill="#f2a33c" />
+      <circle cx="412" cy="152" r="5" fill="#43c9a2" />
+      <circle cx="520" cy="120" r="4" fill="none" stroke="#f2a33c" strokeWidth="1.6" />
+      <text x="500" y="100" fill="#c0b096" fontSize="10.5" fontFamily="JetBrains Mono, monospace">атака &lt; 0.6 —</text>
+      <text x="500" y="113" fill="#c0b096" fontSize="10.5" fontFamily="JetBrains Mono, monospace">нота не началась</text>
+    </svg>
   );
 }
 
-type Artifact = { ext: string; lib: string; title: string; desc: string; opens: string[]; accent: string; viz: ReactNode };
+function Hysteresis() {
+  return (
+    <section id="hysteresis" className="scroll-mt-24 border-t border-line bg-ink-2/40 py-24 sm:py-28">
+      <div className="mx-auto max-w-6xl px-5 sm:px-8">
+        <SectionHeading
+          kicker="02 · Алгоритм выделения нот"
+          title="Два порога вместо одного — нота дышит"
+          lead="Один жёсткий порог либо рвёт затухающие ноты, либо ловит случайные касания струн. Гистерезис (триггер Шмитта) решает обе проблемы: разные пороги на включение и выключение."
+        />
 
-const ARTIFACTS: Artifact[] = [
+        <div className="mt-12 grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+          <Reveal>
+            <div className="card-lift h-full rounded-xl border border-line bg-panel p-6 sm:p-8">
+              <div className="flex items-center justify-between gap-4">
+                <h3 className="font-display text-[16px] font-bold text-paper">Кривая уверенности CREPE</h3>
+                <span className="font-mono text-[10.5px] text-faint">notes.py · hysteresis_segments</span>
+              </div>
+              <div className="mt-6">
+                <HysteresisChart />
+              </div>
+            </div>
+          </Reveal>
+
+          <div className="space-y-5">
+            <Reveal delay={100}>
+              <div className="card-lift rounded-xl border border-amber/30 bg-panel p-6">
+                <div className="flex items-center gap-3">
+                  <span className="font-display text-[26px] font-black text-amber">0.60</span>
+                  <h4 className="font-display text-[14px] font-bold text-paper">Порог активации</h4>
+                </div>
+                <p className="mt-3 text-[13.5px] leading-relaxed text-dim">
+                  Нота начинается, только когда уверенность CREPE поднимается выше 0.60.
+                  Лёгкие касания струн, приглушения и шум не дотягивают до порога —
+                  ложных срабатываний нет.
+                </p>
+              </div>
+            </Reveal>
+
+            <Reveal delay={180}>
+              <div className="card-lift rounded-xl border border-phos/30 bg-panel p-6">
+                <div className="flex items-center gap-3">
+                  <span className="font-display text-[26px] font-black text-phos">0.35</span>
+                  <h4 className="font-display text-[14px] font-bold text-paper">Порог сброса</h4>
+                </div>
+                <p className="mt-3 text-[13.5px] leading-relaxed text-dim">
+                  Once начавшись, нота «держится», пока уверенность не упадёт ниже 0.35.
+                  Затухающий хвост (conf 0.4–0.6) продолжается, а не обрывается —
+                  длинные ноты записываются целиком.
+                </p>
+              </div>
+            </Reveal>
+
+            <Reveal delay={260}>
+              <div className="rounded-xl border border-line bg-panel p-6">
+                <h4 className="font-display text-[14px] font-bold text-paper">+ High-pass 32 Гц</h4>
+                <p className="mt-3 text-[13.5px] leading-relaxed text-dim">
+                  Перед CREPE сигнал проходит биквад-фильтр Баттерворта (срез 30–35 Гц,
+                  Q=0.707). Гул и рокот ниже E1≈41 Гц убираются — нейросеть увереннее в
+                  полезных фреймах, кривая уверенности поднимается выше порога активации.
+                </p>
+                <div className="mt-4 overflow-x-auto rounded-lg border border-line bg-ink-2 px-4 py-3">
+                  <pre className="font-mono text-[11.5px] leading-relaxed text-phos">
+{`AF.highpass_biquad(x, 16000,
+    cutoff_freq=32.0, Q=0.707)`}
+                  </pre>
+                </div>
+              </div>
+            </Reveal>
+          </div>
+        </div>
+
+        <Reveal delay={120}>
+          <div className="mt-8 grid gap-4 sm:grid-cols-3">
+            {[
+              ["Звучащие сегменты", "гистерезис даёт грубые интервалы «звучит/не звучит» с удержанием хвоста"],
+              ["Разрезание онсетами", "librosa onset_detect делит сегмент — повторные атаки той же высоты не сливаются"],
+              ["Медиана центов", "высота ноты — медиана по кадрам с conf ≥ 0.35; устойчива к вибрато"],
+            ].map(([t, d], i) => (
+              <div key={t} className="card-lift rounded-xl border border-line bg-panel p-5">
+                <div className="flex items-center gap-3">
+                  <span className="grid h-8 w-8 place-items-center rounded-md border border-amber/40 font-mono text-[12px] font-bold text-amber">
+                    {i + 1}
+                  </span>
+                  <h4 className="font-display text-[13.5px] font-bold text-paper">{t}</h4>
+                </div>
+                <p className="mt-3 text-[13px] leading-relaxed text-dim">{d}</p>
+              </div>
+            ))}
+          </div>
+        </Reveal>
+      </div>
+    </section>
+  );
+}
+
+/* ================= formats ================= */
+
+const ARTIFACTS = [
   {
-    ext: ".mid", lib: "mido", title: "Standard MIDI File",
-    desc: "Один трек, 480 тиков в четверти, meta-темп из авто-оценки, program 34 (Electric Bass, pick). note_on/note_off — дельта-событиями. Имя трека — через транслитерацию в latin-1.",
-    opens: ["любая DAW", "MuseScore", "Logic / Ableton"], accent: "text-amber",
-    viz: (
-      <svg width="132" height="76" viewBox="0 0 132 76" aria-hidden="true" className="opacity-90">
-        {[0, 1, 2, 3, 4, 5].map((r) => (
-          <line key={r} x1="0" x2="132" y1={8 + r * 12} y2={8 + r * 12} stroke="#3b2f21" strokeWidth="1" />
-        ))}
-        <rect x="6" y="50" width="18" height="8" rx="2" fill="#f2a33c" />
-        <rect x="28" y="38" width="12" height="8" rx="2" fill="#f2a33c" opacity="0.85" />
-        <rect x="46" y="44" width="22" height="8" rx="2" fill="#f2a33c" />
-        <rect x="72" y="26" width="14" height="8" rx="2" fill="#43c9a2" />
-        <rect x="92" y="38" width="10" height="8" rx="2" fill="#f2a33c" opacity="0.7" />
-        <rect x="106" y="50" width="20" height="8" rx="2" fill="#f2a33c" />
-      </svg>
-    ),
+    ext: ".mid", lib: "mido", title: "Standard MIDI File", accent: "text-amber",
+    desc: "Один трек, 480 тиков в четверти, meta-темп, program 34 (Electric Bass, pick). note_on/note_off — дельта-событиями; название — транслитерацией в latin-1.",
+    opens: ["любая DAW", "MuseScore", "Logic / Ableton"],
   },
   {
-    ext: ".musicxml", lib: "xml.etree", title: "MusicXML partwise",
-    desc: "Басовый ключ (F, линейка 4), divisions = 4, размер 4/4, metronome-темп. Ноты длиннее такта разбиваются tie-связками. XML в UTF-8 — кириллица в названии сохраняется как есть.",
-    opens: ["MuseScore", "Dorico", "Finale"], accent: "text-phos",
-    viz: (
-      <svg width="132" height="76" viewBox="0 0 132 76" aria-hidden="true" className="opacity-90">
-        {[22, 32, 42, 52, 62].map((y) => (
-          <line key={y} x1="2" x2="130" y1={y} y2={y} stroke="#8d7c63" strokeWidth="1.2" />
-        ))}
-        <ellipse cx="46" cy="47" rx="5" ry="3.8" transform="rotate(-18 46 47)" fill="#f2a33c" />
-        <line x1="50.6" y1="45.5" x2="50.6" y2="20" stroke="#f2a33c" strokeWidth="1.6" />
-        <ellipse cx="74" cy="42" rx="5" ry="3.8" transform="rotate(-18 74 42)" fill="#f2a33c" />
-        <line x1="78.6" y1="40.5" x2="78.6" y2="15" stroke="#f2a33c" strokeWidth="1.6" />
-        <line x1="50.6" y1="20" x2="78.6" y2="15" stroke="#f2a33c" strokeWidth="2.4" />
-        <ellipse cx="104" cy="52" rx="5" ry="3.8" transform="rotate(-18 104 52)" fill="#43c9a2" />
-        <line x1="108.6" y1="50.5" x2="108.6" y2="26" stroke="#43c9a2" strokeWidth="1.6" />
-      </svg>
-    ),
+    ext: ".musicxml", lib: "xml.etree", title: "MusicXML partwise", accent: "text-phos",
+    desc: "Басовый ключ (F, линейка 4), divisions = 4, размер 4/4, metronome-темп. Ноты длиннее такта разбиваются tie-связками. UTF-8 — кириллица в названии сохраняется.",
+    opens: ["MuseScore", "Dorico", "Finale"],
   },
   {
-    ext: ".gp5", lib: "PyGuitarPro", title: "Guitar Pro 5",
+    ext: ".gp5", lib: "PyGuitarPro", title: "Guitar Pro 5", accent: "text-amber",
     desc: "Трек «Bass» со строем E1–A1–D2–G2. Для каждой ноты выбирается минимальный лад (0–24), паузы достраивают такт до 4/4. Темп и название — в заголовке партитуры (latin-1).",
-    opens: ["Guitar Pro", "TuxGuitar", "alphaTab"], accent: "text-amber",
-    viz: <GpViz />,
+    opens: ["Guitar Pro", "TuxGuitar", "alphaTab"],
   },
 ];
 
 function Formats() {
   return (
-    <section id="formats" className="scroll-mt-24 border-t border-line bg-ink-2/40 py-24 sm:py-28">
+    <section id="formats" className="scroll-mt-24 border-t border-line py-24 sm:py-28">
       <div className="mx-auto max-w-6xl px-5 sm:px-8">
         <SectionHeading
-          kicker="02 · Артефакты"
+          kicker="04 · Артефакты"
           title="Три файла на выходе — и что внутри каждого"
           lead="Имя файла наследуется от исходника: take.wav даёт take.mid, take.musicxml и take.gp5 в каталоге --out."
         />
         <div className="mt-14 space-y-4">
           {ARTIFACTS.map((a, i) => (
             <Reveal key={a.ext} delay={i * 90}>
-              <article className="card-lift group grid items-center gap-6 rounded-xl border border-line bg-panel p-6 md:grid-cols-[150px_1fr_auto] md:p-7">
+              <article className="card-lift group grid items-center gap-6 rounded-xl border border-line bg-panel p-6 md:grid-cols-[150px_1fr] md:p-7">
                 <div>
                   <p className={`font-display text-[30px] font-black leading-none tracking-tight ${a.accent}`}>{a.ext}</p>
                   <p className="mt-2 inline-block rounded border border-line px-2 py-0.5 font-mono text-[10.5px] text-faint">{a.lib}</p>
                 </div>
                 <div>
                   <h3 className="font-display text-[16px] font-bold text-paper">{a.title}</h3>
-                  <p className="mt-2 max-w-xl text-[13.5px] leading-relaxed text-dim">{a.desc}</p>
+                  <p className="mt-2 max-w-2xl text-[13.5px] leading-relaxed text-dim">{a.desc}</p>
                   <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-faint">
                     <span className="text-phos/70">открывается:</span>
                     {a.opens.map((o) => (
                       <span key={o} className="rounded bg-ink-2 px-2 py-0.5">{o}</span>
                     ))}
                   </div>
-                </div>
-                <div className="hidden shrink-0 rounded-lg border border-line/70 bg-ink-2 px-4 py-3 transition-colors duration-300 group-hover:border-amber/30 md:block">
-                  {a.viz}
                 </div>
               </article>
             </Reveal>
@@ -494,56 +565,90 @@ function Formats() {
 
 /* ================= install ================= */
 
-const INSTALL_STEPS = [
-  { title: "Зависимости системы", body: "ffmpeg нужен для чтения mp3 (wav/flac читает libsndfile)." },
-  { title: "Виртуальное окружение", body: "Из-за бага scipy на macOS 26.3+ берите Python 3.11+ (brew install python@3.12)." },
-  { title: "Пакеты Python", body: "Тяжелеет на torch (~60 МБ wheel для arm64) и librosa. scipy среди прямых зависимостей нет — фильтры на чистом numpy." },
-  { title: "Регистрация пакета", body: "pip install -e . — штатная защита от «No module named bass2tabs»: команда работает из любой директории." },
-  { title: "Диагностика MPS", body: "Проверит версии torch/torchcrepe, доступность MPS и прогонит тестовый matmul на GPU." },
-];
-
-const INSTALL_CMDS = [
-  "brew install ffmpeg",
-  "python3 -m venv .venv && source .venv/bin/activate",
-  "pip install -r requirements.txt",
-  "pip install -e .",
-  "bass2tabs --check",
-];
-
 function Install() {
   return (
-    <section id="install" className="scroll-mt-24 border-t border-line py-24 sm:py-28">
+    <section id="install" className="scroll-mt-24 border-t border-line bg-ink-2/40 py-24 sm:py-28">
       <div className="mx-auto max-w-6xl px-5 sm:px-8">
         <SectionHeading
-          kicker="04 · Установка"
+          kicker="05 · Установка"
           title="Пять команд — и пакет транскрибирует"
-          lead="Скачайте папку bass2tabs/ (реальные .py-файлы) и выполните команды ниже в её корне."
+          lead="Скачайте папку bass2tabs/ (настоящие .py-файлы), положите её в корень проекта и выполните команды ниже. Python 3.11+ обязателен: на 3.10 не ставится исправленная scipy."
         />
-        <div className="mt-14 grid gap-10 lg:grid-cols-2 lg:gap-14">
-          <Reveal left>
-            <ol className="space-y-6">
-              {INSTALL_STEPS.map((s, i) => (
-                <li key={s.title} className="flex gap-4">
-                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-amber/40 bg-amber/10 font-display text-[13px] font-bold text-amber">
-                    {i + 1}
-                  </span>
-                  <div>
-                    <p className="font-display text-[14.5px] font-bold text-paper">{s.title}</p>
-                    <p className="mt-1 text-[13px] leading-relaxed text-dim">{s.body}</p>
+        <div className="mt-12 grid gap-8 lg:grid-cols-2">
+          <Reveal>
+            <ol className="space-y-4">
+              {[
+                { t: "Системные зависимости", c: "brew install ffmpeg python@3.12" },
+                { t: "Виртуальное окружение", c: "python3.12 -m venv .venv && source .venv/bin/activate" },
+                { t: "Зависимости Python", c: "pip install -r requirements.txt" },
+                { t: "Регистрация пакета", c: "pip install -e ." },
+                { t: "Диагностика MPS", c: "bass2tabs --check" },
+              ].map((s, i) => (
+                <li key={s.t} className="card-lift rounded-xl border border-line bg-panel p-5">
+                  <div className="flex items-center gap-3">
+                    <span className="grid h-7 w-7 place-items-center rounded-md border border-amber/40 font-mono text-[12px] font-bold text-amber">
+                      {i + 1}
+                    </span>
+                    <h3 className="font-display text-[14px] font-bold text-paper">{s.t}</h3>
+                  </div>
+                  <div className="mt-3">
+                    <Command cmd={s.c} />
                   </div>
                 </li>
               ))}
             </ol>
           </Reveal>
+
           <Reveal delay={120}>
-            <div className="space-y-3">
-              {INSTALL_CMDS.map((c) => (
-                <Command key={c} cmd={c} />
-              ))}
-              <Command
-                cmd='bass2tabs take.wav -o out --formats midi,musicxml,gp5'
-                note="первый прогон: на выходе out/take.mid, out/take.musicxml, out/take.gp5"
-              />
+            <div className="space-y-5">
+              <div className="rounded-xl border border-line bg-panel p-6">
+                <h3 className="font-display text-[15px] font-bold text-paper">Первый прогон</h3>
+                <div className="mt-4">
+                  <Command
+                    cmd="bass2tabs take.wav -o out --formats midi,musicxml,gp5"
+                    note="на выходе: out/take.mid, out/take.musicxml, out/take.gp5"
+                  />
+                </div>
+                <div className="mt-4">
+                  <Command
+                    cmd="bass2tabs take.wav --on-thr 0.6 --off-thr 0.35 --highpass 32"
+                    note="гистерезис и high-pass уже по умолчанию — показаны явно для наглядности"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-line bg-panel p-6">
+                <h3 className="font-display text-[15px] font-bold text-paper">Ключевые флаги</h3>
+                <div className="mt-4 overflow-x-auto">
+                  <table className="w-full font-mono text-[12px]">
+                    <thead>
+                      <tr className="text-left text-[10.5px] uppercase tracking-wider text-faint">
+                        <th className="pb-2 pr-4">флаг</th>
+                        <th className="pb-2 pr-4">по умолч.</th>
+                        <th className="pb-2">смысл</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-dim">
+                      {[
+                        ["--on-thr", "0.60", "порог активации ноты"],
+                        ["--off-thr", "0.35", "порог сброса ноты"],
+                        ["--highpass", "32", "срез HP, Гц (0 = выкл)"],
+                        ["--model", "full", "CREPE: full / tiny"],
+                        ["--batch", "авто", "64 mps / 2048 cpu"],
+                        ["--tempo", "авто", "фиксированный BPM"],
+                        ["--grid", "16", "сетка квантизации"],
+                        ["--device", "auto", "auto/mps/cuda/cpu"],
+                      ].map(([f, d, m]) => (
+                        <tr key={f} className="border-t border-line/60">
+                          <td className="py-2 pr-4 text-amber">{f}</td>
+                          <td className="py-2 pr-4 text-phos">{d}</td>
+                          <td className="py-2">{m}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           </Reveal>
         </div>
@@ -560,37 +665,33 @@ const FAQ = [
     a: "Все 14 файлов — настоящие .py/.txt/.toml/.md-файлы в папке public/bass2tabs/ репозитория. Они отдаются статикой без JS-рендера: в разделе «Исходники» у каждого файла есть прямая ссылка «Скачать», работает даже при отключённом JavaScript. Соберите структуру bass2tabs/bass2tabs/… как показано в README — и пакет готов.",
   },
   {
+    q: "Почему два порога, а не один?",
+    a: "Один порог — это компромисс: ниже — ловит касания струн, выше — рвёт затухающие ноты. Гистерезис разводит эти задачи: нота ВКЛЮЧАЕТСЯ при уверенности ≥ 0.60 (строгий вход против ложных срабатываний) и ВЫКЛЮЧАЕТСЯ только при < 0.35 (мягкий выход, хвост держится). Интервал 0.35–0.60 — зона удержания. Настройка — флагами --on-thr и --off-thr.",
+  },
+  {
+    q: "Зачем high-pass перед CREPE, если CREPE и так знает диапазон?",
+    a: "Сценический гул, рокот и постоянная составляющая (всё ниже ~35 Гц) снижают периодичность, которую оценивает CREPE, — уверенность в полезных фреймах падает и может не дотянуть до порога активации. Биквад-фильтр Баттерворта на 32 Гц (Q=0.707) убирает этот мусор до инференса, и кривая уверенности поднимается. Срез — флаг --highpass (30–35 Гц, 0 = выключить).",
+  },
+  {
     q: "«No module named bass2tabs» — Python не видит пакет",
     a: "python -m bass2tabs ищет каталог bass2tabs/ с __init__.py в текущей директории либо среди установленных пакетов. Быстрое решение — запускать из корня проекта (где лежит bass2tabs/bass2tabs/__init__.py). Кардинальное — pip install -e . в корне: пакет зарегистрируется в venv, и команда bass2tabs будет работать откуда угодно.",
   },
   {
-    q: "pip пишет «No matching distribution found for torch-mel-crepe»",
-    a: "Пакет в PyPI называется torchcrepe — одним словом, без дефисов; имени torch-mel-crepe там никогда не было. В requirements.txt это учтено: pip install \"torchcrepe>=0.0.22\". Проверить можно командой bass2tabs --check.",
-  },
-  {
-    q: "ImportError: dlopen _spropack.so — «__thread_bss … offset field is not zero»",
-    a: "Это scipy ≤ 1.16 на macOS Tahoe 26.3+: ужесточённый dyld не пропускает битые Mach-O-секции (scipy/scipy#25635). Сам bass2tabs scipy не импортирует — фильтры на чистом numpy. Но транзитивно её грузят librosa/torchcrepe. Лечение — venv на Python 3.11+: туда встанет scipy ≥ 1.17 с корректными секциями. brew install python@3.12 && python3.12 -m venv .venv && pip install -r requirements.txt && pip install -e .",
-  },
-  {
     q: "«Failed to allocate IOGPUDeviceShmem» и zsh: abort",
-    a: "Падает не Python, а Metal-драйвер: он abort'ит крупные выделения общей GPU-памяти (SIGABRT), перехватить который try/except нельзя. bass2tabs защищён с двух сторон: весь DSP — на CPU (первое GPU-выделение происходит только в CREPE), а сам инференс — в дочернем процессе, и при его гибели прогон автоматически повторяется на CPU. Дополнительно: чанки по 30 с, батч 64, PYTORCH_ENABLE_MPS_FALLBACK=1. Снизить шанс аборта: --batch 32, закрыть GPU-прожорливые приложения. Гарантированный обход — --device cpu.",
+    a: "Падает не Python, а Metal-драйвер: он abort'ит крупные выделения общей GPU-памяти (SIGABRT), перехватить который try/except нельзя. bass2tabs защищён с двух сторон: весь DSP — на CPU (первое GPU-выделение происходит только в CREPE), а сам инференс — в дочернем процессе, и при его гибели прогон автоматически повторяется на CPU. Дополнительно: чанки по 30 c, батч 64, PYTORCH_ENABLE_MPS_FALLBACK=1. Снизить шанс аборта: --batch 32, закрыть GPU-прожорливые приложения. Гарантированный обход — --device cpu.",
   },
   {
-    q: "Кириллица в названии файла ломала экспорт — почему теперь нет?",
-    a: "Форматы SMF (MIDI) и Guitar Pro 5 хранят текст в 8-битном latin-1 — UTF-8 туда не помещается. bass2tabs транслитерирует кириллицу в читаемую латиницу (модуль text.py: «Кейптаун» → «Keyptaun»), снимает диакритику, остаток заменяет на '?'. MusicXML — XML в UTF-8, там кириллица сохраняется как есть. Своё название — флаг --title.",
-  },
-  {
-    q: "AttributeError: 'Measure' has no attribute 'clone' / cannot import name 'Tempo'",
-    a: "API PyGuitarPro нестабилен между сборками: в одних есть Measure.clone и класс Tempo, в других — нет (у Measure нет clone никогда; Tempo отсутствует в части версий). export_gp5.py поэтому не ссылается на них: меры строятся явно через MeasureHeader + Measure, а темп и размер меняются «по месту» в объектах, которые MeasureHeader() уже создал по умолчанию — с фолбэком на обычный int, если Tempo-объекта нет. Работает на всех версиях PyGuitarPro.",
+    q: "Ноты сливаются или, наоборот, дробятся — что крутить?",
+    a: "Сливаются повторные атаки одной высоты — проверьте, что онсеты включены (они всегда включены и режут гистерезисные сегменты). Дробятся затухающие ноты — понизьте --off-thr (например, до 0.3) или --on-thr (до 0.5). Много ложных нот от касаний — поднимите --on-thr до 0.65–0.7. Слишком короткие обрывки — поднимите --min-duration.",
   },
 ];
 
 function Faq() {
   const [open, setOpen] = useState(0);
   return (
-    <section id="faq" className="scroll-mt-24 border-t border-line bg-ink-2/40 py-24 sm:py-28">
+    <section id="faq" className="scroll-mt-24 border-t border-line py-24 sm:py-28">
       <div className="mx-auto max-w-4xl px-5 sm:px-8">
-        <SectionHeading kicker="05 · FAQ" title="Вопросы, которые задают после первого прогона" />
+        <SectionHeading kicker="06 · FAQ" title="Вопросы после первого прогона" />
         <div className="mt-12 space-y-3">
           {FAQ.map((item, i) => {
             const isOpen = open === i;
@@ -638,13 +739,14 @@ function Faq() {
 
 export default function App() {
   return (
-    <div className="bg-stage noise relative min-h-screen overflow-x-clip">
-      <div className="bg-grid pointer-events-none absolute inset-x-0 top-0 h-[620px]" aria-hidden="true" />
+    <div className="bg-stage noise relative min-h-screen">
+      <div className="bg-grid pointer-events-none absolute inset-x-0 top-0 h-[520px]" aria-hidden="true" />
       <Nav />
       <main className="relative">
         <Hero />
         <Marquee />
         <Pipeline />
+        <Hysteresis />
         <Formats />
         <CodeBrowser />
         <Install />

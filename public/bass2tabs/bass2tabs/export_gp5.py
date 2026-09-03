@@ -3,6 +3,11 @@
 GP хранит ноты как (струна, лад). Строй 4-струнного баса E-A-D-G; для ноты
 выбирается минимальный лад — позиции остаются читаемыми. Названия и
 исполнитель — через to_latin1 (формат GP 8-битный).
+
+Класс Tempo/TimeSignature в части сборок PyGuitarPro отсутствует, поэтому
+темп и размер меняются «по месту» в объектах, которые MeasureHeader() уже
+создал по умолчанию, — код не ссылается на эти классы и работает на всех
+версиях.
 """
 
 from __future__ import annotations
@@ -57,8 +62,7 @@ def write_gp5(notes, path: Path, tempo: float = 120.0,
     song.title = to_latin1(title)
     song.artist = to_latin1(artist)
     tempo_val = int(round(tempo))
-    # Song.tempo по умолчанию — int (120), райтер ждёт именно int;
-    # в сам файл темп пишется из header.tempo (задаётся ниже, по месту).
+    # Song.tempo по умолчанию — int; в сам файл темп пишется из header.tempo.
     song.tempo = tempo_val
 
     # У свежей gp.Song() дефолтный трек уже есть, но подстрахуемся.
@@ -84,9 +88,7 @@ def write_gp5(notes, path: Path, tempo: float = 120.0,
         header = gp.MeasureHeader()
         header.number = i + 1
         header.start = 960 + i * 3840
-        # Темп и размер: не ссылаемся на классы Tempo/TimeSignature — в части
-        # сборок PyGuitarPro их нет в models. Меняем значения «по месту» в
-        # объектах, которые MeasureHeader() уже создал по умолчанию.
+        # Темп и размер — «по месту», не ссылаясь на классы Tempo/TimeSignature.
         try:
             header.tempo.value = tempo_val      # объект с .value
         except AttributeError:

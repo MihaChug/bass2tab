@@ -1,4 +1,15 @@
-"""Сегментация питч-контура в ноты: онсеты, медиана центов, velocity, темп."""
+"""Сегментация питч-контура в ноты.
+
+Ключевая идея — ДВУХПОРОГОВАЯ (гистерезисная) система вместо одного жёсткого
+порога:
+  * порог АКТИВАЦИИ ноты  on_thr  = 0.60 — нота начинается, только когда
+    уверенность CREPE уверенно высокая (не ловим случайные касания струн);
+  * порог СБРОСА ноты     off_thr = 0.35 — нота «держится», пока уверенность
+    не упадёт совсем низко: затухающий хвост не обрывается раньше времени.
+
+Грубые «звучащие» сегменты от гистерезиса затем режутся онсетами librosa,
+чтобы повторные атаки той же высоты не сливались в одну длинную ноту.
+"""
 
 from __future__ import annotations
 
@@ -32,47 +43,83 @@ def cents_to_midi(cents: float) -> int:
     return int(round(cents / 100.0 + 3.4868))
 
 
-def detect_notes(samples, sr, hop, cents, confidence, rms, rms_hop,
-                 confidence_thr=0.5, min_duration=0.08,
-                 midi_low=28, midi_high=64) -> list[Note]:
-    """Онсеты -> сегменты -> ноты.
+def hysteresis_segments(confidence: np.ndarray,
+                        on_thr: float = 0.6, off_thr: float = 0.35,
+                        min_frames: int = 3) -> list[tuple[int, int]]:
+    """Двухпороговая сегментация озвученных кадров (триггер Шмитта).
 
-    Высота — медиана центов по «озвученным» фреймам сегмента (устойчива к
-    вибрато). Velocity — из RMS первых фреймов атаки, нормируется на 30-120.
+    Кадр «включает» ноту при confidence >= on_thr и «выключает» её, только
+    когда confidence < off_thr. Интервал [off_thr, on_thr) — зона удержания:
+    затухающая нота продолжается, пока не упадёт ниже порога сброса.
+
+    Возвращает список (start, end) индексов кадров, end не включается.
+    """
+    segments: list[tuple[int, int]] = []
+    in_note = False
+    start = 0
+    for i, c in enumerate(confidence):
+        c = float(c) if np.isfinite(c) else 0.0
+        if not in_note:
+            if c >= on_thr:
+                in_note = True
+                start = i
+        elif c < off_thr:
+            segments.append((start, i))
+            in_note = False
+    if in_note:
+        segments.append((start, len(confidence)))
+    return [(s, e) for s, e in segments if e - s >= min_frames]
+
+
+def detect_notes(samples, sr, hop, cents, confidence, rms, rms_hop,
+                 on_thr=0.6, off_thr=0.35, min_duration=0.08,
+                 midi_low=28, midi_high=64) -> list[Note]:
+    """Гистерезис -> звучащие сегменты; онсеты -> разрезание; медиана -> нота.
+
+    Высота — медиана центов по кадрам с confidence >= off_thr внутри сегмента
+    (устойчива к вибрато и захватывает затухающий хвост). Velocity — из RMS
+    первых кадров атаки, нормируется на 30-120.
     """
     import librosa
 
+    times = np.arange(len(cents)) * (hop / sr)
+
+    # 1) грубые «звучащие» сегменты — двухпороговая гистерезис-сегментация
+    sounding = hysteresis_segments(confidence, on_thr=on_thr, off_thr=off_thr)
+    if not sounding:
+        return []
+
+    # 2) атаки во всём треке — чтобы разрезать залипшие повторные ноты
     onset_frames = librosa.onset.onset_detect(
         y=samples, sr=sr, backtrack=True, units="frames", hop_length=hop)
     onsets = sorted({int(f) for f in onset_frames})
-    if not onsets:
-        onsets = [0]
 
-    times = np.arange(len(cents)) * (hop / sr)
+    # 3) каждый звучащий сегмент режем онсетами -> отдельные ноты
     notes: list[Note] = []
-    for i, start_f in enumerate(onsets):
-        end_f = onsets[i + 1] if i + 1 < len(onsets) else len(cents)
-        seg_c = cents[start_f:end_f]
-        seg_conf = confidence[start_f:end_f]
-        voiced = np.isfinite(seg_c) & (seg_conf >= confidence_thr)
-        if not voiced.any():
-            continue
-        midi = cents_to_midi(float(np.median(seg_c[voiced])))
-        if not (midi_low <= midi <= midi_high):
-            continue
+    for s, e in sounding:
+        cuts = [o for o in onsets if s < o < e]
+        bounds = [s] + cuts + [e]
+        for a, b in zip(bounds, bounds[1:]):
+            seg_c = cents[a:b]
+            seg_conf = confidence[a:b]
+            voiced = np.isfinite(seg_c) & (seg_conf >= off_thr)
+            if not voiced.any():
+                continue
+            midi = cents_to_midi(float(np.median(seg_c[voiced])))
+            if not (midi_low <= midi <= midi_high):
+                continue
 
-        start = times[start_f]
-        end = times[min(end_f, len(times) - 1)]
-        dur = max(end - start, hop / sr)
-        if dur < min_duration:
-            continue
+            start = times[a]
+            end = times[min(b, len(times) - 1)]
+            dur = max(end - start, hop / sr)
+            if dur < min_duration:
+                continue
 
-        # velocity из RMS первых фреймов после атаки
-        r0 = start_f * hop // rms_hop
-        seg_rms = rms[r0:r0 + 3]
-        vel = float(np.mean(seg_rms)) if seg_rms.size else 0.0
-        notes.append(Note(start=float(start), duration=float(dur),
-                          midi=int(midi), velocity=vel))
+            r0 = a * hop // rms_hop
+            seg_rms = rms[r0:r0 + 3]
+            vel = float(np.mean(seg_rms)) if seg_rms.size else 0.0
+            notes.append(Note(start=float(start), duration=float(dur),
+                              midi=int(midi), velocity=vel))
 
     if not notes:
         return []

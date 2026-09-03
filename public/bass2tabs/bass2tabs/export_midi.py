@@ -1,7 +1,7 @@
 """Экспорт в Standard MIDI File (mido): 480 tpq, дельта-события, program 34.
 
-Текст (имя трека) пишется через to_latin1: формат SMF 8-битный (latin-1),
-кириллица в нём не помещается (mido бросает UnicodeEncodeError).
+Название трека — через to_latin1: формат SMF хранит текст в latin-1
+(mido кодирует им намеренно), кириллица вызвала бы UnicodeEncodeError.
 """
 
 from __future__ import annotations
@@ -41,9 +41,9 @@ def write_midi(notes, path: Path, tempo: float = 120.0,
     events.sort(key=lambda e: (e[0], e[1]))
 
     last = 0
-    for tick, kind, midi_num, vel in events:
+    for tick, kind, midi, vel in events:
         msg = "note_on" if kind == "on" else "note_off"
-        track.append(mido.Message(msg, note=midi_num, velocity=vel,
+        track.append(mido.Message(msg, note=midi, velocity=vel,
                                   channel=0, time=tick - last))
         last = tick
 
