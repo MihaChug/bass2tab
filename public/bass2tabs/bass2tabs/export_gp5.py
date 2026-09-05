@@ -114,6 +114,11 @@ def write_gp5(notes, path: Path, tempo: float = 120.0,
         cursor = 0  # позиция в шестнадцатых
         for n in events:
             start16 = int(round((n.start_beat - bar * 4) * 4))
+            if start16 < cursor:
+                # Наложение после квантования (две ноты в одном слоте сетки):
+                # бас монофонический, дубликат пропускаем — иначе голос
+                # окажется длиннее такта.
+                continue
             if start16 > cursor:
                 _add_rest(voice, start16 - cursor)
             steps = max(1, int(round(n.beats * 4)))

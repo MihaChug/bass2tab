@@ -95,15 +95,18 @@ def write_musicxml(notes, path: Path, tempo: float = 120.0,
             key=lambda e: e[0])
 
         for start_div, dur_div, midi in bar_notes:
-            seg_start = max(start_div, bar_start)
+            # cursor в max() страхует от наложений после квантования: без него
+            # две ноты в одном слоте сетки записывались с перекрытием и такт
+            # становился длиннее размера (MuseScore: «incomplete measure»).
+            seg_start = max(start_div, bar_start, cursor)
             seg_end = min(start_div + dur_div, bar_end)
             seg_dur = seg_end - seg_start
             if seg_dur <= 0:
-                continue
+                continue  # сегмент целиком съеден наложением
             if seg_start > cursor:
                 _add_note(measure, None, seg_start - cursor)  # пауза
             tie_start = seg_end < start_div + dur_div
-            tie_stop = seg_start > start_div
+            tie_stop = start_div < bar_start  # хвост ноты из прошлого такта
             _add_note(measure, midi, seg_dur, tie_start, tie_stop)
             cursor = seg_end
 
