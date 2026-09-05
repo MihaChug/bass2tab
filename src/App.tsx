@@ -111,7 +111,7 @@ function Equalizer() {
 
 /* ================= hero ================= */
 
-const BADGES = ["torch ≥ 2.1", "MPS", "CREPE-full · viterbi", "гистерезис 0.6/0.35", "HP 32 Гц", "silence −60 дБ", "коридор 0.55 пт", "MIDI", "MusicXML", "GP5"];
+const BADGES = ["torch ≥ 2.1", "MPS", "CREPE-full · viterbi", "filter.mean ×3", "гистерезис 0.6/0.35", "HP 32 Гц", "silence −60 дБ", "коридор 0.55 пт", "MIDI", "MusicXML", "GP5"];
 
 function Hero() {
   const reduced = usePrefersReducedMotion();
@@ -207,8 +207,8 @@ function Hero() {
 
 const ITEMS = [
   "wav → midi", "flac → musicxml", "mp3 → gp5", "torch · mps", "crepe-full · viterbi",
-  "on 0.60 / off 0.35", "high-pass 32 Гц", "silence −60 дБ", "коридор 0.55 полутона",
-  "диапазон E1–G4", "сетка 1/16", "строй E–A–D–G",
+  "filter.mean ×3", "on 0.60 / off 0.35", "high-pass 32 Гц", "silence −60 дБ",
+  "коридор 0.55 полутона", "диапазон E1–G4", "сетка 1/16", "строй E–A–D–G",
 ];
 
 function Marquee() {
@@ -298,8 +298,8 @@ const STAGES = [
   },
   {
     num: "03", title: "Питч-трекинг CREPE", engine: "torchcrepe · MPS",
-    desc: "CNN full (~24.4M параметров) поверх мел-спектра; декодирование — всегда Витерби (не argmax): сглаживает траекторию f0 и минимизирует октавные ошибки. Затем обнуление уверенности в тишине (−60 дБ, невзвешенный RMS — A-взвешивание глушит бас и дало бы 0 нот) и частотный гистерезис-коридор ~0.55 полутона. Чанки по 30 c, инференс — в subprocess с авто-откатом на CPU.",
-    tags: ["viterbi", "silence −60 дБ (RMS)", "коридор 0.55 пт", "чанки 30 c"], icon: ICONS.chip,
+    desc: "CNN full (~24.4M параметров) поверх мел-спектра; декодирование — всегда Витерби (не argmax): динамическое программирование связывает соседние фреймы в единые ноты, отсекает скачущий шум и минимизирует октавные ошибки. Затем сглаживание частоты filter.mean (окно 3, NaN-устойчивое), обнуление уверенности в тишине (−60 дБ, невзвешенный RMS — A-взвешивание глушит бас и дало бы 0 нот) и частотный гистерезис-коридор ~0.55 полутона. Чанки по 30 c, инференс — в subprocess с авто-откатом на CPU.",
+    tags: ["viterbi", "filter.mean ×3", "silence −60 дБ (RMS)", "коридор 0.55 пт", "чанки 30 c"], icon: ICONS.chip,
   },
   {
     num: "04", title: "Гистерезис + онсеты", engine: "триггер Шмитта · librosa",
@@ -487,24 +487,36 @@ function Hysteresis() {
         <Reveal delay={80}>
           <div className="mt-8 rounded-xl border border-line bg-ink-2/60 p-6 sm:p-7">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 className="font-display text-[15px] font-bold text-paper">Три слоя защиты высоты</h3>
+              <h3 className="font-display text-[15px] font-bold text-paper">Четыре слоя защиты высоты</h3>
               <span className="font-mono text-[10.5px] text-faint">pitch.py · до квантования в MIDI</span>
             </div>
-            <div className="mt-5 grid gap-5 md:grid-cols-3">
+            <div className="mt-5 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
               <div>
                 <div className="flex items-center gap-2">
                   <span className="h-1.5 w-1.5 rounded-full bg-amber" aria-hidden="true" />
                   <h4 className="font-mono text-[12px] font-bold uppercase tracking-wider text-amber">Витерби</h4>
                 </div>
                 <p className="mt-2.5 text-[13px] leading-relaxed text-dim">
-                  Декодирование — всегда Витерби, не argmax: сглаживает траекторию f0
-                  и минимизирует «октавные ошибки» — суб-бас не прыгает на октаву вверх.
+                  Декодирование — всегда Витерби, не argmax: динамическое
+                  программирование связывает соседние фреймы в единые ноты,
+                  отсекает скачущий шум и «октавные ошибки».
                 </p>
               </div>
               <div>
                 <div className="flex items-center gap-2">
                   <span className="h-1.5 w-1.5 rounded-full bg-phos" aria-hidden="true" />
-                  <h4 className="font-mono text-[12px] font-bold uppercase tracking-wider text-phos">Тишина −60 дБ</h4>
+                  <h4 className="font-mono text-[12px] font-bold uppercase tracking-wider text-phos">Сглаживание ×3</h4>
+                </div>
+                <p className="mt-2.5 text-[13px] leading-relaxed text-dim">
+                  torchcrepe.filter.mean по окну 3 кадра (~30 мс) убирает
+                  микро-скачки и квантовочные артефакты. Устойчив к NaN —
+                  неозвученные кадры не размазываются на озвученные.
+                </p>
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-2" aria-hidden="true" />
+                  <h4 className="font-mono text-[12px] font-bold uppercase tracking-wider text-amber-2">Тишина −60 дБ</h4>
                 </div>
                 <p className="mt-2.5 text-[13px] leading-relaxed text-dim">
                   Уверенность обнуляется в паузах (невзвешенный RMS, чистый numpy) —
@@ -744,7 +756,7 @@ const FAQ = [
   },
   {
     q: "Откуда берётся защита от фантомных нот в паузах и дробления нот вибрато?",
-    a: "Три слоя в pitch.py. (1) Декодирование — всегда Витерби, а не argmax: он математически сглаживает траекторию частоты и минимизирует «октавные ошибки» (суб-бас не прыгает на октаву). (2) Перед гистерезисом уверенность обнуляется в абсолютной тишине (−60 дБ, невзвешенный RMS на чистом numpy): фантомные ноты в паузах исчезают. Важный нюанс: штатный torchcrepe.threshold.Silence считает A-взвешенную громкость, а A-вес ослабляет басовые фундаменты на 22–43 дБ — с ним весь басовый трек выглядит «тишиной» и нот получается 0, поэтому для баса используется невзвешенный RMS. (3) Частотный гистерезис — коридор ~0.55 полутона: пока высота не ушла за коридор, она удерживается, поэтому микро-вибрато и фазовые искажения низких частот не дробят одну ноту на быстрые полутоновые скачки.",
+    a: "Четыре слоя в pitch.py. (1) Декодирование — всегда Витерби, а не argmax: алгоритм динамического программирования лучше связывает соседние фреймы в единые ноты, отсекает случайный скачущий шум и минимизирует «октавные ошибки» (суб-бас не прыгает на октаву). (2) Сглаживание частоты — torchcrepe.filter.mean по окну 3 кадра (~30 мс), устойчивое к NaN: убирает микро-скачки и квантовочные артефакты высоты. (3) Перед гистерезисом уверенность обнуляется в абсолютной тишине (−60 дБ, невзвешенный RMS на чистом numpy): фантомные ноты в паузах исчезают. Важный нюанс: штатный torchcrepe.threshold.Silence считает A-взвешенную громкость, а A-вес ослабляет басовые фундаменты на 22–43 дБ — с ним весь басовый трек выглядит «тишиной» и нот получается 0, поэтому для баса используется невзвешенный RMS. (4) Частотный гистерезис — коридор ~0.55 полутона: пока высота не ушла за коридор, она удерживается, поэтому микро-вибрато и фазовые искажения низких частот не дробят одну ноту на быстрые полутоновые скачки.",
   },
   {
     q: "Прогон дошёл до конца, но «0 нот» — что делать?",
